@@ -24,8 +24,24 @@ _STATUS_STYLE: dict[ProductStatus, str | None] = {
 }
 
 
-def category_grid(categories: list[Category], locale: str):
+def category_grid(categories: list[Category], locale: str, *, loose: list[Product] | None = None):
     rows: list[list[InlineKeyboardButton]] = []
+
+    # Products filed outside every category sit above the folders, one per row so they read as
+    # items rather than as more folders. The divider only appears when there is something to divide.
+    for product in loose or []:
+        rows.append(
+            [
+                btn(
+                    f"📦 {product.name} — {format_minor(product.price_minor, product.currency)}",
+                    ProductCB(action="view", id=str(product.id)).pack(),
+                    PRIMARY,
+                )
+            ]
+        )
+    if loose:
+        rows.append([btn("─────────────", "noop", NEUTRAL)])
+
     row: list[InlineKeyboardButton] = []
     # Alternating blue/green down the grid — the categories carry no state that would justify one
     # color over another, so the split is purely so adjacent tiles stay distinguishable.
@@ -76,8 +92,11 @@ def product_list(views: list[ProductView], category_id: int, page: Page, locale:
     return with_nav(rows, locale, back_target="categories")
 
 
-def product_detail(product: Product, view: ProductView, locale: str, category_id: int):
+def product_detail(product: Product, view: ProductView, locale: str, category_id: int | None):
     rows: list[list[InlineKeyboardButton]] = []
     if view.display_status.value in ("IN_STOCK", "LOW_STOCK"):
         rows.append([btn("🛒 Buy Now", ProductCB(action="buy", id=str(product.id)).pack(), SUCCESS)])
-    return with_nav(rows, locale, back_target=f"cat-{category_id}")
+    # nav.py parses "cat-<int>"; a product with no category has no folder to return to, so Back
+    # goes to the store root rather than building an unparseable "cat-None".
+    target = f"cat-{category_id}" if category_id is not None else "categories"
+    return with_nav(rows, locale, back_target=target)

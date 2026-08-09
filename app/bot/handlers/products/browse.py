@@ -24,9 +24,12 @@ PAGE_SIZE = 12
 
 async def render_categories(session: AsyncSession, locale: str) -> tuple[str, object]:
     categories = await CategoryRepo(session).list_active()
-    if not categories:
+    # Products with no category are real stock, not an empty store — they render above the folders.
+    loose = await ProductRepo(session).list_uncategorized()
+    if not categories and not loose:
         return "🛍️ <b>STORE</b>\n\n💳 Premium products available now! Pay with crypto (💎 USDT/BNB) and get instant delivery. Browse categories or visit /products to see all available items.", category_grid([], locale)
-    return "🛍️ <b>STORE</b>\n\nChoose a category:", category_grid(categories, locale)
+    heading = "Choose a category:" if categories else "Available now:"
+    return f"🛍️ <b>STORE</b>\n\n{heading}", category_grid(categories, locale, loose=loose)
 
 
 async def render_product_list(
