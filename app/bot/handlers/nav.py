@@ -10,7 +10,7 @@ from app.bot.filters.is_admin import is_admin_user
 from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
 from app.bot.keyboards.common import back_keyboard
-from app.bot.keyboards.main_menu import main_inline_keyboard
+from app.bot.keyboards.main_menu import main_inline_keyboard, main_reply_keyboard
 from app.core.config import get_settings
 from app.database.models.order import OrderStatus
 from app.database.models.user import User
@@ -51,6 +51,7 @@ async def on_nav(
             t("welcome.subtitle", user.locale, name=user.first_name or "there"),
             reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
         )
+        await query.message.answer("‎", reply_markup=main_reply_keyboard(user.locale, is_admin=is_admin))
         await query.answer()
         return
 

@@ -11,6 +11,7 @@ from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import (
     language_inline_keyboard,
     main_inline_keyboard,
+    main_reply_keyboard,
 )
 from app.database.models.user import User
 from app.locales.i18n import supported_locales, t
@@ -30,7 +31,9 @@ async def show_language_picker(message: Message, user: User) -> None:
 async def nav_language(query: CallbackQuery, callback_data: NavCB, user: User) -> None:  # noqa: ARG001
     if not query.message:
         return
-    await show_language_picker(query.message, user)
+    await query.message.edit_text(
+        t("language.prompt", user.locale), reply_markup=language_inline_keyboard(user.locale)
+    )
     await query.answer()
 
 
@@ -46,3 +49,4 @@ async def set_language(query: CallbackQuery, callback_data: LangCB, session: Asy
         await query.message.edit_text(
             t("welcome.subtitle", locale), reply_markup=main_inline_keyboard(locale, is_admin=is_admin)
         )
+        await query.message.answer("‎", reply_markup=main_reply_keyboard(locale, is_admin=is_admin))
