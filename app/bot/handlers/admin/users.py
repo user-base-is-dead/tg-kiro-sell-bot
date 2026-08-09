@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminMiscCB, AdminUserCB
 from app.bot.filters.is_admin import IsAdmin
-from app.bot.keyboards.styles import PRIMARY, btn
+from app.bot.keyboards.common import nav_row
+from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
 from app.bot.states.user_search_form import UserSearchForm
 from app.core.config import get_settings
 from app.database.models.user import UserStatus
@@ -26,7 +27,16 @@ router.callback_query.filter(IsAdmin())
 @router.callback_query(AdminMiscCB.filter(F.action == "users"))
 async def prompt_search(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserSearchForm.query)
-    await query.message.edit_text("👥 <b>USERS</b>\n\nSend a Telegram ID or @username to search (or /cancel):")
+    await query.message.edit_text(
+        "👥 <b>USERS</b>\n\n"
+        "Look up any account to inspect or moderate it.\n\n"
+        "Send a <b>Telegram ID</b> (e.g. <code>123456789</code>) or a <b>@username</b>.\n"
+        "You'll see their order count, wallet balance and signup date, with a Ban/Unban control.\n\n"
+        "A partial username matches too — you'll get a list to pick from.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[nav_row("en", back_target="admin_panel", home=False)]
+        ),
+    )
     await query.answer()
 
 
@@ -45,9 +55,10 @@ def _detail_keyboard(target) -> InlineKeyboardMarkup:
                 btn(
                     toggle[0],
                     AdminUserCB(action=toggle[1], id=str(target.id)).pack(),
-                    PRIMARY if banned else PRIMARY,
+                    SUCCESS if banned else DANGER,
                 )
-            ]
+            ],
+            nav_row("en", back_target="admin_panel", home=False),
         ]
     )
 
@@ -73,8 +84,11 @@ async def do_search(message: Message, state: FSMContext, session: AsyncSession) 
     await state.clear()
 
     results = await UserRepo(session).search(query_text)
+    back_only = InlineKeyboardMarkup(
+        inline_keyboard=[nav_row("en", back_target="admin_panel", home=False)]
+    )
     if not results:
-        await message.answer("No matching users.")
+        await message.answer("No matching users.", reply_markup=back_only)
         return
     if len(results) == 1:
         target = results[0]
@@ -85,6 +99,7 @@ async def do_search(message: Message, state: FSMContext, session: AsyncSession) 
         [btn(f"@{u.username or u.telegram_id}", AdminUserCB(action="view", id=str(u.id)).pack(), PRIMARY)]
         for u in results
     ]
+    rows.append(nav_row("en", back_target="admin_panel", home=False))
     await message.answer(f"Found {len(results)} users:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 

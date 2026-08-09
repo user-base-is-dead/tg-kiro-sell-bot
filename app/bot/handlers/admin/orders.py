@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminOrderCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.bot.states.order_fulfill_form import OrderFulfillForm
 from app.database.repositories.audit_repo import AuditRepo
@@ -33,7 +34,9 @@ def _list_keyboard(orders: list) -> InlineKeyboardMarkup:
         ]
         for o in orders
     ]
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[btn("— none —", "noop", NEUTRAL)]])
+    rows = rows or [[btn("— none —", "noop", NEUTRAL)]]
+    rows.append(nav_row("en", back_target="admin_panel", home=False))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _detail_keyboard(order_id: str) -> InlineKeyboardMarkup:

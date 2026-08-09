@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminProductCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.bot.states.product_form import ProductForm, StockUploadForm
 from app.database.models.catalog import FulfillmentMode
@@ -49,6 +50,7 @@ def _list_keyboard(products: list, page: Page) -> InlineKeyboardMarkup:
     if nav:
         rows.append(nav)
     rows.append([btn("➕ Add Product", AdminProductCB(action="add").pack(), PRIMARY)])
+    rows.append(nav_row("en", back_target="admin_panel", home=False))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminCategoryCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.bot.states.category_form import CategoryForm
 from app.database.models.user import User
@@ -35,6 +36,7 @@ def _list_keyboard(categories: list) -> InlineKeyboardMarkup:
             ]
         )
     rows.append([btn("➕ Add Category", AdminCategoryCB(action="add").pack(), PRIMARY)])
+    rows.append(nav_row("en", back_target="admin_panel", home=False))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
