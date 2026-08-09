@@ -25,7 +25,7 @@ PAGE_SIZE = 12
 async def render_categories(session: AsyncSession, locale: str) -> tuple[str, object]:
     categories = await CategoryRepo(session).list_active()
     if not categories:
-        return "🛍️ <b>STORE</b>\n\nNo categories yet — check back soon!", category_grid([], locale)
+        return "🛍️ <b>STORE</b>\n\n📚 Browse our collection by category. Each category has premium products carefully curated for you. Select a category to explore and find exactly what you're looking for!", category_grid([], locale)
     return "🛍️ <b>STORE</b>\n\nChoose a category:", category_grid(categories, locale)
 
 
