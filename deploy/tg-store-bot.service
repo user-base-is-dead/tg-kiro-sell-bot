@@ -1,0 +1,17 @@
+[Unit]
+Description=Premium Telegram Digital-Product Store Bot
+After=network.target postgresql.service redis.service
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/tg-store-bot
+EnvironmentFile=/opt/tg-store-bot/.env
+ExecStart=/opt/tg-store-bot/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=5
+# Give in-flight sends/DB transactions a moment before SIGKILL.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

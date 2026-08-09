@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import re
+import secrets
+from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.security import get_cipher
+from app.database.models.catalog import FulfillmentMode, Product, ProductStatus
+from app.database.repositories.category_repo import CategoryRepo
+from app.database.repositories.product_repo import ProductRepo
+from app.database.repositories.stock_repo import StockRepo
+
+
+def slugify(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "item"
+    return f"{base}-{secrets.token_hex(2)}"
+
+
+@dataclass(frozen=True)
+class ProductView:
+    """What screens render — status derived from live stock count, never trusted from callback
+    data or a stale cache."""
+
+    product: Product
+    available_stock: int
+    display_status: ProductStatus
+
+
+async def compute_display_status(session: AsyncSession, product: Product) -> ProductView:
+    if product.status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        return ProductView(product, 0, product.status)
+
+    if product.fulfillment_mode == FulfillmentMode.MANUAL:
+        # MANUAL products aren't backed by a pre-added code pool — admin fulfills each order
+        # by hand, so availability isn't gated by stock_items at all.
+        return ProductView(product, 0, ProductStatus.IN_STOCK)
+
+    available = await ProductRepo(session).available_stock_count(product.id)
+    if available <= 0:
+        status = ProductStatus.OUT_OF_STOCK
+    elif available <= product.low_stock_threshold:
+        status = ProductStatus.LOW_STOCK
+    else:
+        status = ProductStatus.IN_STOCK
+    return ProductView(product, available, status)
+
+
+async def create_category(
+    session: AsyncSession,
+    *,
+    name: str,
+    emoji: str | None,
+    description: str | None,
+    image_file_id: str | None,
+) -> int:
+    slug = slugify(name)
+    category = await CategoryRepo(session).create(
+        name=name, slug=slug, emoji=emoji, description=description, image_file_id=image_file_id
+    )
+    return category.id
+
+
+async def create_product(
+    session: AsyncSession,
+    *,
+    category_id: int,
+    name: str,
+    description: str | None,
+    price_minor: int,
+    currency: str,
+    fulfillment_mode: FulfillmentMode,
+    warranty_days: int,
+    delivery_info: str | None,
+    image_file_id: str | None,
+    low_stock_threshold: int = 3,
+) -> int:
+    slug = slugify(name)
+    product = await ProductRepo(session).create(
+        category_id=category_id,
+        name=name,
+        slug=slug,
+        description=description,
+        price_minor=price_minor,
+        currency=currency,
+        fulfillment_mode=fulfillment_mode,
+        warranty_days=warranty_days,
+        delivery_info=delivery_info,
+        image_file_id=image_file_id,
+        low_stock_threshold=low_stock_threshold,
+        status=ProductStatus.OUT_OF_STOCK,
+    )
+    return product.id
+
+
+async def add_stock(
+    session: AsyncSession, *, product_id: int, plaintext_payloads: list[str], added_by_admin_id: int
+) -> int:
+    """Encrypts every payload before it touches the DB — a dump alone never leaks sellable goods."""
+    cipher = get_cipher()
+    encrypted = [cipher.encrypt(p) for p in plaintext_payloads if p.strip()]
+    batch_id = secrets.token_hex(4)
+    count = await StockRepo(session).bulk_add(
+        product_id, encrypted, batch_id=batch_id, added_by_admin_id=added_by_admin_id
+    )
+
+    product = await ProductRepo(session).get_by_id(product_id)
+    if product and product.status not in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        view = await compute_display_status(session, product)
+        product.status = view.display_status
+
+    return count

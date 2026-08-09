@@ -1,0 +1,81 @@
+{
+  "welcome": {
+    "title": "✨ <b>{store_name}</b> ✨",
+    "subtitle": "Hey {name}! 👋\n\nWelcome to your premium digital-product store. We're thrilled to have you here!\n\n🛍️ Browse our exclusive collection\n📦 Track your orders in real-time\n💬 Get instant support when you need it\n🎁 Enjoy special offers and rewards\n\nPick an option below to get started.",
+    "returning": "👋 Welcome back, {name}!"
+  },
+  "menu": {
+    "start": "🚀 Start",
+    "products": "🛍️ Products",
+    "orders": "📦 Orders",
+    "support": "💬 Support",
+    "language": "🌐 Language",
+    "gift": "🎁 Free Gift",
+    "refer": "🔗 Refer & Earn",
+    "warranty": "🔧 Warranty",
+    "topup": "💳 Top Up",
+    "profile": "👤 Profile",
+    "admin_panel": "🛡️ Admin Panel",
+    "back": "🔙 Back",
+    "home": "🏠 Home",
+    "confirm": "✅ Confirm",
+    "cancel": "❌ Cancel"
+  },
+  "common": {
+    "unknown_action": "This action is no longer available.",
+    "session_expired": "⏳ This session expired — send /start to continue.",
+    "unauthorized": "🚫 You're not authorized to do that.",
+    "banned": "🚫 Your account has been suspended. Contact support if you think this is a mistake.",
+    "error_generic": "⚠️ Something went wrong on our end. The team has been notified — please try again shortly.",
+    "flood": "🐢 You're going a bit fast — please slow down.",
+    "page_indicator": "{page}/{total}"
+  },
+  "help": {
+    "body": "❓ <b>Help</b>\n\n/start — main menu\n/products — browse the store\n/orders — your order history\n/support — get help from our team\n/language — change language\n/gift — redeem a gift code\n/refer — your referral link\n/warranty — warranty status\n/topup — top up your balance\n/profile — your account\n\nStuck? Use 💬 Support and we'll help you out."
+  },
+  "language": {
+    "prompt": "🌐 Choose your language:",
+    "changed": "✅ Language set to English."
+  },
+  "errors": {
+    "insufficient_balance": "💳 Insufficient balance. Top up your wallet and try again.",
+    "out_of_stock": "🔴 Sorry, this item just went out of stock.",
+    "product_unavailable": "This product is no longer available.",
+    "max_per_user_reached": "You've reached the purchase limit for this product."
+  },
+  "gift": {
+    "prompt": "🎁 <b>Free Gift</b>\n\nSend your gift code, or /cancel:",
+    "invalid_code": "📭 No gifts available right now.",
+    "not_active": "📭 No gifts available right now.",
+    "expired": "📭 No gifts available right now.",
+    "exhausted": "📭 No gifts available right now.",
+    "limit_reached": "You've already claimed this gift! 😊 We'll notify you when new gifts are available.",
+    "redeemed": "✅ Redeemed! {amount} added to your balance."
+  },
+  "support": {
+    "menu": "💬 <b>Support</b>\n\nHow can we help?",
+    "create": "🎫 Create Ticket",
+    "my_tickets": "📋 My Tickets",
+    "choose_category": "Choose a category for your ticket:",
+    "ask_subject": "Briefly describe your issue (or /cancel):",
+    "created": "✅ Ticket <b>{ticket_number}</b> opened. Just reply here to chat with support — we'll get back to you soon.",
+    "created_undelivered": "⚠️ Ticket <b>{ticket_number}</b> was saved, but we couldn't reach our support team just now. It is not lost — we'll pick it up as soon as the connection is back.",
+    "left_conversation": "ℹ️ That didn't go to support — you've stepped out of ticket <b>{ticket_number}</b>. Buttons and commands are handled by the bot, not by our team. Just send a normal message here whenever you want to continue the conversation.",
+    "ticket_closed": "This ticket is closed. Open a new one if you still need help.",
+    "no_tickets": "You don't have any support tickets yet.",
+    "closed_notice": "🔒 This ticket has been closed."
+  },
+  "referral": {
+    "screen_title": "🔗 <b>Refer & Earn</b>",
+    "screen_body": "Share your link — you earn a reward when someone you refer completes their first purchase.\n\n🔗 <code>{link}</code>\n\n👥 Total referrals: {total}\n✅ Qualified: {qualified}\n💰 Reward per referral: {reward}"
+  },
+  "orders": {
+    "confirm_title": "🛒 <b>Confirm Purchase</b>",
+    "confirm_body": "{name}\n\n💰 Price: {price}\n💳 Your balance: {balance}\n\nConfirm this purchase?",
+    "placed": "✅ Order <code>{order_number}</code> placed!",
+    "auto_delivery": "📬 <b>Here's your item:</b>\n\n<code>{payload}</code>\n\n🛡️ Warranty: {warranty_days} days.",
+    "manual_pending": "⏳ Your order is being processed by our team and will be delivered shortly.",
+    "empty_history": "📦 You don't have any orders yet.",
+    "history_title": "📦 <b>MY ORDERS</b>"
+  }
+}
