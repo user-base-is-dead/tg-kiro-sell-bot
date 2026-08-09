@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import Router
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -12,6 +14,8 @@ from app.bot.keyboards.main_menu import main_inline_keyboard, main_reply_keyboar
 from app.database.models.user import User
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="user.start")
 
@@ -51,5 +55,14 @@ async def _send_welcome(message: Message, session: AsyncSession, user: User) -> 
 
     subtitle = t("welcome.subtitle", locale, name=user.first_name or "there")
 
+    logger.debug("Sending welcome message with inline keyboard")
     await message.answer(subtitle, reply_markup=main_inline_keyboard(locale, is_admin=is_admin))
-    await message.answer("‎", reply_markup=main_reply_keyboard(locale, is_admin=is_admin))
+
+    logger.debug("Sending reply keyboard (persistent bottom panel) with is_admin=%s", is_admin)
+    try:
+        reply_kb = main_reply_keyboard(locale, is_admin=is_admin)
+        logger.debug("Reply keyboard created: %d rows", len(reply_kb.keyboard) if reply_kb.keyboard else 0)
+        await message.answer(" ", reply_markup=reply_kb)
+        logger.debug("Reply keyboard sent successfully")
+    except Exception as e:
+        logger.error("Failed to send reply keyboard: %s", e, exc_info=True)

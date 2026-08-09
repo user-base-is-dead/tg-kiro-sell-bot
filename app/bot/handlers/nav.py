@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
@@ -18,6 +20,8 @@ from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import t
 from app.utils.money import format_minor
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="nav")
 
@@ -47,11 +51,17 @@ async def on_nav(
         # but their next message is still swallowed by the form they thought they left.
         await state.clear()
         is_admin = await is_admin_user(session, user.telegram_id)
+        logger.debug("Navigating to home with is_admin=%s", is_admin)
         await query.message.edit_text(
             t("welcome.subtitle", user.locale, name=user.first_name or "there"),
             reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
         )
-        await query.message.answer("‎", reply_markup=main_reply_keyboard(user.locale, is_admin=is_admin))
+        try:
+            reply_kb = main_reply_keyboard(user.locale, is_admin=is_admin)
+            await query.message.answer(" ", reply_markup=reply_kb)
+            logger.debug("Reply keyboard sent on home navigation")
+        except Exception as e:
+            logger.error("Failed to send reply keyboard on home navigation: %s", e, exc_info=True)
         await query.answer()
         return
 
