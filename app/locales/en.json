@@ -67,7 +67,7 @@
   },
   "referral": {
     "screen_title": "🔗 <b>Refer & Earn</b>",
-    "screen_body": "Share your link — you earn a reward when someone you refer completes their first purchase.\n\n🔗 <code>{link}</code>\n\n👥 Total referrals: {total}\n✅ Qualified: {qualified}\n💰 Reward per referral: {reward}"
+    "screen_body": "Share your link — you earn a reward when someone you refer completes their first purchase.\n\n🔗 <code>{link}</code>\n\n👥 Total referrals: {total}\n✅ Qualified: {qualified}\n💰 Reward per referral: {reward}\n\n📌 <b>How it works:</b>\n• Only NEW users who join via your link are counted\n• They must complete their first purchase to qualify\n• You earn {reward} for each qualified referral\n• Existing users cannot use referral links"
   },
   "orders": {
     "confirm_title": "🛒 <b>Confirm Purchase</b>",

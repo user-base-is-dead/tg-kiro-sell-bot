@@ -47,11 +47,12 @@ class UserRepo:
         chat_id: int | None,
         referred_by_id: int | None = None,
         default_locale: str = "en",
-    ) -> User:
+    ) -> tuple[User, bool]:
         user = await self.get_by_telegram_id(telegram_id)
         now = datetime.now(UTC)
+        is_new = user is None
 
-        if user is None:
+        if is_new:
             code = _new_referral_code()
             while await self.get_by_referral_code(code) is not None:
                 code = _new_referral_code()
@@ -78,4 +79,4 @@ class UserRepo:
                 user.chat_id = chat_id
             user.last_seen_at = now
 
-        return user
+        return user, is_new

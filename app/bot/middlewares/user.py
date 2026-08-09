@@ -39,7 +39,7 @@ class UserMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         repo = UserRepo(data["session"])
-        user = await repo.upsert_from_telegram(
+        user, is_new_user = await repo.upsert_from_telegram(
             telegram_id=from_user.id,
             username=from_user.username,
             first_name=from_user.first_name,
@@ -48,5 +48,6 @@ class UserMiddleware(BaseMiddleware):
             default_locale=self._default_locale,
         )
         data["user"] = user
+        data["is_new_user"] = is_new_user
 
         return await handler(event, data)

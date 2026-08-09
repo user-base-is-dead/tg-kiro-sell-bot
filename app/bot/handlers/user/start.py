@@ -17,9 +17,10 @@ router = Router(name="user.start")
 
 
 @router.message(CommandStart(deep_link=True))
-async def cmd_start_with_ref(message: Message, command: CommandObject, session: AsyncSession, user: User) -> None:
+async def cmd_start_with_ref(message: Message, command: CommandObject, session: AsyncSession, user: User, is_new_user: bool) -> None:
     payload = command.args or ""
-    if payload.startswith("ref_") and user.referred_by_id is None:
+    # Only allow referral links for NEW users to prevent existing users from changing their referrer
+    if payload.startswith("ref_") and is_new_user and user.referred_by_id is None:
         code = payload.removeprefix("ref_")
         repo = UserRepo(session)
         referrer = await repo.get_by_referral_code(code)
