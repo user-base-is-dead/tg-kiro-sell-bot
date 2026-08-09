@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -131,15 +132,22 @@ def test_every_admin_command_is_guarded() -> None:
 
 def test_every_admin_fsm_state_group_is_guarded() -> None:
     """An admin-only wizard missing from the guard would let a demoted admin's next form step
-    fall through to the support relay and be delivered to staff as a support message."""
+    fall through to the support relay and be delivered to staff as a support message.
+
+    Parsed with ast rather than a regex: a parenthesized multi-line import made the old pattern
+    capture "(" as a state group name, so the set compared equal for the wrong reason and the
+    check silently stopped guarding anything.
+    """
     imported: set[str] = set()
     for path in _ADMIN_HANDLERS_DIR.glob("*.py"):
         if path.name == "guard.py":
             continue
-        for match in re.finditer(
-            r"from app\.bot\.states\.\w+ import (.+)", path.read_text(encoding="utf-8")
-        ):
-            imported.update(name.strip() for name in match.group(1).split(","))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "app.bot.states."
+            ):
+                imported.update(alias.name for alias in node.names)
 
     assert imported == {group.__name__ for group in _ADMIN_STATE_GROUPS}
 

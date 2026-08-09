@@ -14,7 +14,13 @@ from app.bot.states.broadcast_form import BroadcastForm
 from app.bot.states.category_form import CategoryForm
 from app.bot.states.gift_form import GiftCreateForm
 from app.bot.states.order_fulfill_form import OrderFulfillForm
-from app.bot.states.product_form import ProductForm, StockUploadForm
+from app.bot.states.product_form import (
+    ProductEditForm,
+    ProductForm,
+    ProductImportForm,
+    ProductSearchForm,
+    StockUploadForm,
+)
 from app.bot.states.settings_form import SettingsForm
 from app.bot.states.user_search_form import UserSearchForm
 from app.database.models.user import User
@@ -63,7 +69,10 @@ _ADMIN_STATE_GROUPS = (
     CategoryForm,
     GiftCreateForm,
     OrderFulfillForm,
+    ProductEditForm,
     ProductForm,
+    ProductImportForm,
+    ProductSearchForm,
     SettingsForm,
     StockUploadForm,
     UserSearchForm,
