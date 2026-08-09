@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminMiscCB
 from app.bot.filters.is_admin import IsAdmin
-from app.bot.keyboards.styles import PRIMARY, btn
+from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
 from app.bot.states.broadcast_form import BroadcastForm
 from app.core.config import get_settings
 from app.database.repositories.audit_repo import AuditRepo
@@ -55,8 +55,11 @@ async def set_body(message: Message, state: FSMContext) -> None:
     await state.update_data(body=body)
     await state.set_state(BroadcastForm.confirm)
 
-    markup = InlineKeyboardMarkup(inline_keyboard=[[btn("🚀 Send now", "broadcast_send", PRIMARY)]])
-    await message.answer(f"<b>Preview:</b>\n\n{body}\n\n— tap Send when ready.", reply_markup=markup)
+    markup = InlineKeyboardMarkup(inline_keyboard=[[
+        btn("✅ Done", "broadcast_send", SUCCESS),
+        btn("❌ Abort", "broadcast_abort", DANGER),
+    ]])
+    await message.answer(f"<b>Preview:</b>\n\n{body}\n\n— tap Done to send or Abort to cancel.", reply_markup=markup)
 
 
 @router.callback_query(F.data == "broadcast_send", BroadcastForm.confirm)
@@ -77,6 +80,13 @@ async def confirm_send(query: CallbackQuery, state: FSMContext, session: AsyncSe
 
     settings = get_settings()
     asyncio.create_task(run_worker(query.message.bot, settings.database_url, broadcast.id))  # noqa: RUF006 — fire-and-forget worker
+
+
+@router.callback_query(F.data == "broadcast_abort", BroadcastForm.confirm)
+async def abort_broadcast(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await query.message.edit_text("❌ Broadcast cancelled.")
+    await query.answer()
 
 
 @router.message(Command("broadcast_status"))
