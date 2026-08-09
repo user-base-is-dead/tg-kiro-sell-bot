@@ -19,16 +19,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("warranties", sa.Column("claim_started_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("warranties", sa.Column("claim_ticket_id", sa.BigInteger(), nullable=True))
-    op.create_index("ix_warranties_claim_ticket_id", "warranties", ["claim_ticket_id"])
-    op.create_foreign_key(
-        "fk_warranties_claim_ticket_id", "warranties", "support_tickets", ["claim_ticket_id"], ["id"]
-    )
+    with op.batch_alter_table("warranties") as batch_op:
+        batch_op.add_column(sa.Column("claim_started_at", sa.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(sa.Column("claim_ticket_id", sa.BigInteger(), nullable=True))
+        batch_op.create_index("ix_warranties_claim_ticket_id", ["claim_ticket_id"])
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_warranties_claim_ticket_id", "warranties", type_="foreignkey")
-    op.drop_index("ix_warranties_claim_ticket_id", table_name="warranties")
-    op.drop_column("warranties", "claim_ticket_id")
-    op.drop_column("warranties", "claim_started_at")
+    with op.batch_alter_table("warranties") as batch_op:
+        batch_op.drop_index("ix_warranties_claim_ticket_id")
+        batch_op.drop_column("claim_ticket_id")
+        batch_op.drop_column("claim_started_at")
