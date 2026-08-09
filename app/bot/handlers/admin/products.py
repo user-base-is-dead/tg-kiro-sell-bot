@@ -294,7 +294,12 @@ async def receive_stock(message: Message, state: FSMContext, session: AsyncSessi
     data = await state.get_data()
     product_id = data["product_id"]
     try:
-        count = await add_stock(session, product_id, lines, user.telegram_id)
+        count = await add_stock(
+            session,
+            product_id=product_id,
+            plaintext_payloads=lines,
+            added_by_admin_id=user.telegram_id,
+        )
         await state.clear()
         await message.answer(f"✅ Added {count} stock items.")
     except ValueError as exc:
