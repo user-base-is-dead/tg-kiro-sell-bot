@@ -34,35 +34,31 @@ async def render_topup_packages(locale: str, show_title: bool = True) -> tuple[s
         text = (
             "💰 <b>Top Up Wallet - Crypto</b>\n\n"
             "Current balance: $0.00\n\n"
-            "Choose an amount to top up your wallet with USDT (BNB Chain):\n"
+            "Enter the amount to top up your wallet with USDT (BNB Chain):\n"
         )
     else:
-        text = "Choose an amount to top up your wallet with USDT (BNB Chain):\n"
+        text = "Enter the amount to top up your wallet with USDT (BNB Chain):\n"
+
+    # Only show custom amount button
+    from app.bot.keyboards.styles import PRIMARY
+    from app.bot.callbacks import NavCB
+    from app.bot.keyboards.common import btn
+
     rows = [
         [
             InlineKeyboardButton(
-                text=pkg["label"],
-                callback_data=f"topup_crypto:{pkg_id}",
+                text="✏️ Enter Custom Amount",
+                callback_data="topup_crypto_custom",
+                # Note: Button styling is applied via Telegram Bot API 9.4
             )
-            for pkg_id, pkg in list(TOPUP_PACKAGES.items())[i : i + 2]
+        ],
+        [
+            InlineKeyboardButton(
+                text="◄ Back",
+                callback_data=NavCB(target="welcome").pack(),
+            )
         ]
-        for i in range(0, len(TOPUP_PACKAGES), 2)
     ]
-    # Add custom amount button
-    rows.append([
-        InlineKeyboardButton(
-            text="✏️ Custom Amount",
-            callback_data="topup_crypto_custom",
-        )
-    ])
-    # Add back button
-    from app.bot.callbacks import NavCB
-    rows.append([
-        InlineKeyboardButton(
-            text="◄ Back",
-            callback_data=NavCB(target="welcome").pack(),
-        )
-    ])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -213,7 +209,6 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
 @router.callback_query(F.data == "topup_crypto_custom")
 async def on_topup_custom(query: CallbackQuery, state: FSMContext, session: AsyncSession, user: User) -> None:
     """Handle custom amount button - ask user to input amount."""
-    from app.bot.states.topup_form import TopUpForm
     from app.bot.keyboards.common import back_keyboard
 
     if not query.message:
