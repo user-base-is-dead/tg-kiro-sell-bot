@@ -11,7 +11,6 @@ from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import (
     language_inline_keyboard,
     main_inline_keyboard,
-    main_reply_keyboard,
 )
 from app.database.models.user import User
 from app.locales.i18n import supported_locales, t

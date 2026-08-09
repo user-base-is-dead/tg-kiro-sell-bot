@@ -9,15 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import NavCB
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.common import back_keyboard
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.states.topup_form import TopUpForm
 from app.core.config import get_settings
 from app.database.models.user import User
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import t
-from app.services.payments.registry import get_provider
-from app.utils.money import format_minor, parse_to_minor
+from app.utils.money import format_minor
 
 router = Router(name="payments.topup")
 
@@ -45,6 +43,8 @@ async def nav_topup(
 
     if not query.message:
         return
+    # Leaving the custom-amount screen abandons the form, so the state must go with it.
+    await state.clear()
     wallet = await WalletRepo(session).get_or_create(user.id, currency=get_settings().default_currency)
     packages_text, markup = await render_topup_packages(user.locale, show_title=False)
     text = (
@@ -56,53 +56,14 @@ async def nav_topup(
     await query.answer()
 
 
+# The amount itself is handled by the crypto flow in `topup_crypto.py`; this module only owns the
+# entry screen and /cancel. A second `TopUpForm.amount` handler here would shadow it, since this
+# router is registered first.
 @router.message(Command("cancel"), TopUpForm.amount)
-@router.message(Command("cancel"), TopUpForm.proof)
 async def cancel_topup(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
     await state.clear()
     is_admin = await is_admin_user(session, user.telegram_id)
     await message.answer(
         t("welcome.subtitle", user.locale, name=user.first_name or "there"),
         reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
-    )
-
-
-@router.message(TopUpForm.amount)
-async def set_amount(message: Message, state: FSMContext, user: User) -> None:
-    try:
-        amount_minor = parse_to_minor((message.text or "").strip())
-        if amount_minor <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Please send a valid positive amount, e.g. 20.00:")
-        return
-    await state.update_data(amount_minor=amount_minor)
-    await state.set_state(TopUpForm.proof)
-    await message.answer(
-        "Send proof of payment (a screenshot, transaction id, or note for the admin reviewing this):",
-        reply_markup=back_keyboard(user.locale),
-    )
-
-
-@router.message(TopUpForm.proof)
-async def set_proof(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
-    proof = message.text or (message.caption or "") or (message.photo[-1].file_id if message.photo else "")
-    if not proof:
-        await message.answer("Please send some text describing your payment, or /cancel:")
-        return
-
-    data = await state.get_data()
-    provider = get_provider()
-    intent = await provider.create_intent(
-        session,
-        user_id=user.id,
-        amount_minor=data["amount_minor"],
-        currency=get_settings().default_currency,
-        proof=proof[:512],
-    )
-    await state.clear()
-    await message.answer(
-        f"✅ Requested {format_minor(intent.amount_minor, intent.currency)} top-up.\n\n"
-        + provider.render_instructions(intent),
-        reply_markup=back_keyboard(user.locale),
     )

@@ -98,5 +98,9 @@ class Warranty(BigIntPKMixin, Base):
         Enum(WarrantyStatus, name="warranty_status"), default=WarrantyStatus.ACTIVE
     )
     claim_notes: Mapped[str | None] = mapped_column(String(1024))
+    # Set when the user files a claim: the moment the 24h staff-response clock starts, and the
+    # support ticket the claim conversation lives in (see jobs/warranty_auto_reject.py).
+    claim_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_ticket_id: Mapped[int | None] = mapped_column(ForeignKey("support_tickets.id"), index=True)
 
     __table_args__ = (Index("ix_warranties_expires_status", "expires_at", "status"),)

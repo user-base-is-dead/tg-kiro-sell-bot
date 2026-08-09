@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.common import nav_row
 from app.bot.states.topup_form import TopUpForm
@@ -12,17 +12,8 @@ from app.database.models.user import User
 from app.database.models.crypto import CryptoPayment
 from app.locales.i18n import t
 from app.services.payments.blockchain_monitor import BlockchainMonitor
-from app.utils.errors import UserError
 
 router = Router(name="payments.topup_crypto")
-
-# Top-up packages in USD
-TOPUP_PACKAGES = {
-    "10": {"usd": 10.0, "label": "$10"},
-    "25": {"usd": 25.0, "label": "$25"},
-    "50": {"usd": 50.0, "label": "$50"},
-    "100": {"usd": 100.0, "label": "$100"},
-}
 
 PAYMENT_TIMEOUT_MINUTES = 15
 SERVICE_FEE = 0.2  # USD
@@ -40,24 +31,12 @@ async def render_topup_packages(locale: str, show_title: bool = True) -> tuple[s
         text = "Enter the amount to top up your wallet with USDT (BNB Chain):\n"
 
     # Only show custom amount button
-    from app.bot.keyboards.styles import PRIMARY
     from app.bot.callbacks import NavCB
-    from app.bot.keyboards.common import btn
+    from app.bot.keyboards.styles import DANGER, SUCCESS, btn
 
     rows = [
-        [
-            InlineKeyboardButton(
-                text="✏️ Enter Custom Amount",
-                callback_data="topup_crypto_custom",
-                # Note: Button styling is applied via Telegram Bot API 9.4
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="◄ Back",
-                callback_data=NavCB(target="welcome").pack(),
-            )
-        ]
+        [btn("✏️ Enter Custom Amount", "topup_crypto_custom", SUCCESS)],
+        [btn("◄ Back", NavCB(target="home").pack(), DANGER)],
     ]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -106,43 +85,13 @@ async def render_payment_details(
         "⚠️ Send exactly the total amount shown to ensure auto-confirmation."
     )
 
+    from app.bot.keyboards.styles import SUCCESS, btn
+
     rows = [
-        [
-            InlineKeyboardButton(
-                text="✓ Check Payment Status",
-                callback_data=f"check_topup_crypto:{payment.id}",
-            )
-        ],
-        nav_row(locale, back_target="topup_packages"),
+        [btn("✓ Check Payment Status", f"check_topup_crypto:{payment.id}", SUCCESS)],
+        nav_row(locale, back_target="topup"),
     ]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-@router.callback_query(F.data == "topup_packages")
-async def on_topup_packages(query: CallbackQuery, session: AsyncSession, user: User) -> None:
-    """Show top-up package selection."""
-    if not query.message:
-        return
-    text, markup = await render_topup_packages(user.locale)
-    await query.message.edit_text(text, reply_markup=markup)
-    await query.answer()
-
-
-@router.callback_query(F.data.startswith("topup_crypto:"))
-async def on_topup_crypto_select(query: CallbackQuery, session: AsyncSession, user: User) -> None:
-    """Handle package selection."""
-    if not query.message:
-        return
-
-    pkg_id = query.data.split(":")[-1]
-    if pkg_id not in TOPUP_PACKAGES:
-        await query.answer(t("common.unknown_action", user.locale), show_alert=True)
-        return
-
-    pkg = TOPUP_PACKAGES[pkg_id]
-    text, markup = await render_payment_details(session, user.id, pkg["usd"], user.locale)
-    await query.message.edit_text(text, reply_markup=markup)
-    await query.answer()
 
 
 @router.callback_query(F.data.startswith("check_topup_crypto:"))
@@ -152,7 +101,7 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
         return
 
     payment_id = int(query.data.split(":")[-1])
-    payment = await session.get(__import__("app.database.models.crypto", fromlist=["CryptoPayment"]).CryptoPayment, payment_id)
+    payment = await session.get(CryptoPayment, payment_id)
 
     if payment is None or payment.user_id != user.id:
         await query.answer(t("common.unknown_action", user.locale), show_alert=True)
@@ -196,12 +145,9 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
         text = f"❓ <b>Payment Status: {payment.status}</b>"
 
     from app.bot.callbacks import NavCB
-    rows = [[
-        InlineKeyboardButton(
-            text="◄ Back",
-            callback_data=NavCB(target="topup").pack(),
-        )
-    ]]
+    from app.bot.keyboards.styles import DANGER, btn
+
+    rows = [[btn(t("menu.back", user.locale), NavCB(target="topup").pack(), DANGER)]]
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await query.answer()
 
@@ -209,17 +155,22 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
 @router.callback_query(F.data == "topup_crypto_custom")
 async def on_topup_custom(query: CallbackQuery, state: FSMContext, session: AsyncSession, user: User) -> None:
     """Handle custom amount button - ask user to input amount."""
-    from app.bot.keyboards.common import back_keyboard
+    from app.bot.callbacks import NavCB
+    from app.bot.keyboards.styles import DANGER, btn
 
     if not query.message:
         return
 
     await state.set_state(TopUpForm.amount)
+    # Back here means "one step back to the top-up screen", not all the way home.
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[[btn(t("menu.back", user.locale), NavCB(target="topup").pack(), DANGER)]]
+    )
     await query.message.edit_text(
         "💰 <b>Enter Custom Amount</b>\n\n"
         "Type the amount in USD (e.g., 15.50):\n\n"
         "Min: $1.00 | Max: $10000.00",
-        reply_markup=back_keyboard(user.locale),
+        reply_markup=markup,
     )
     await query.answer()
 
@@ -227,7 +178,6 @@ async def on_topup_custom(query: CallbackQuery, state: FSMContext, session: Asyn
 @router.message(TopUpForm.amount, F.text)
 async def process_custom_topup(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
     """Process custom top-up amount."""
-    from app.bot.states.topup_form import TopUpForm
 
     if not message.text:
         return

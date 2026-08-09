@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.main_menu import main_inline_keyboard, main_reply_keyboard
+from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.database.models.user import User
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t

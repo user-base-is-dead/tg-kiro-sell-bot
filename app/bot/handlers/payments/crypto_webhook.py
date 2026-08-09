@@ -5,7 +5,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.services.payments.crypto import CryptoPaymentProcessor
 
 logger = logging.getLogger(__name__)

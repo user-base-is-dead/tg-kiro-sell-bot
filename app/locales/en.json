@@ -44,7 +44,7 @@
     "max_per_user_reached": "You've reached the purchase limit for this product."
   },
   "gift": {
-    "prompt": "🎁 <b>Free Gift</b>\n\nSend your gift code, or /cancel:",
+    "prompt": "🎁 <b>Free Gift</b>\n\nHave a gift code? Send it here and its value will be added to your wallet instantly.\n\n✏️ Type your code below:",
     "invalid_code": "📭 No gifts available right now.",
     "not_active": "📭 No gifts available right now.",
     "expired": "📭 No gifts available right now.",
@@ -53,7 +53,7 @@
     "redeemed": "✅ Redeemed! {amount} added to your balance."
   },
   "support": {
-    "menu": "💬 <b>Support</b>\n\nHow can we help?",
+    "menu": "💬 <b>Support</b>\n\nNeed help with an order, a payment, or your wallet? Our team is here for you.\n\n🎫 <b>Create Ticket</b> — describe your issue and we'll get back to you.\n📋 <b>My Tickets</b> — check replies and the status of your past tickets.\n\n⏱️ Typical reply time: within a few hours.",
     "create": "🎫 Create Ticket",
     "my_tickets": "📋 My Tickets",
     "choose_category": "Choose a category for your ticket:",

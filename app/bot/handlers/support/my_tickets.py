@@ -59,7 +59,7 @@ async def _render_tickets(session: AsyncSession, user: User, page_num: int = 1) 
     if nav_rows:
         rows.append(nav_rows)
 
-    title = f"📋 <b>MY TICKETS</b>"
+    title = "📋 <b>MY TICKETS</b>"
     if page.total_pages > 1:
         title = f"📋 <b>MY TICKETS ({page.clamped_page}/{page.total_pages})</b>"
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
@@ -19,25 +19,25 @@ router.callback_query.filter(IsAdmin())
 
 
 def _list_keyboard(txns: list) -> InlineKeyboardMarkup:
-    # Approve/reject sit side by side on every row â€” green vs red is what stops a mis-tap here.
+    # Approve/reject sit side by side on every row — green vs red is what stops a mis-tap here.
     rows = [
         [
             btn(
-                f"âœ… #{t.id} {format_minor(t.amount_minor, 'USD')}",
+                f"✅ #{t.id} {format_minor(t.amount_minor, 'USD')}",
                 AdminPaymentCB(action="approve", id=str(t.id)).pack(),
                 PRIMARY,
             ),
-            btn("âŒ Reject", AdminPaymentCB(action="reject", id=str(t.id)).pack(), PRIMARY),
+            btn("❌ Reject", AdminPaymentCB(action="reject", id=str(t.id)).pack(), PRIMARY),
         ]
         for t in txns
     ]
-    return InlineKeyboardMarkup(inline_keyboard=rows or [[btn("â€” none â€”", "noop", NEUTRAL)]])
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[btn("— none —", "noop", NEUTRAL)]])
 
 
 @router.callback_query(AdminPaymentCB.filter(F.action == "list"))
 async def list_pending(query: CallbackQuery, session: AsyncSession) -> None:
     txns = await WalletRepo(session).list_pending_topups()
-    text = f"ðŸ’° <b>PENDING TOP-UPS</b>\n\n{len(txns)} request(s) awaiting review."
+    text = f"💰 <b>PENDING TOP-UPS</b>\n\n{len(txns)} request(s) awaiting review."
     await query.message.edit_text(text, reply_markup=_list_keyboard(txns))
     await query.answer()
 
@@ -67,10 +67,10 @@ async def approve(query: CallbackQuery, callback_data: AdminPaymentCB, session: 
     await query.answer("Approved.")
     txns = await WalletRepo(session).list_pending_topups()
     await query.message.edit_text(
-        f"ðŸ’° <b>PENDING TOP-UPS</b>\n\n{len(txns)} request(s) awaiting review.", reply_markup=_list_keyboard(txns)
+        f"💰 <b>PENDING TOP-UPS</b>\n\n{len(txns)} request(s) awaiting review.", reply_markup=_list_keyboard(txns)
     )
 
-    # Notify the buyer directly (best-effort â€” they may have blocked the bot).
+    # Notify the buyer directly (best-effort — they may have blocked the bot).
     from app.database.models.wallet import Wallet
 
     wallet_row = await session.get(Wallet, approved.wallet_id)
@@ -80,7 +80,7 @@ async def approve(query: CallbackQuery, callback_data: AdminPaymentCB, session: 
             try:
                 await query.message.bot.send_message(
                     buyer.chat_id,
-                    f"âœ… Your top-up of {format_minor(approved.amount_minor, wallet_row.currency)} was approved! "
+                    f"✅ Your top-up of {format_minor(approved.amount_minor, wallet_row.currency)} was approved! "
                     f"New balance: {format_minor(wallet_row.balance_minor, wallet_row.currency)}",
                 )
             except Exception:  # noqa: BLE001
@@ -106,7 +106,7 @@ async def reject(query: CallbackQuery, callback_data: AdminPaymentCB, session: A
     await query.answer("Rejected.")
     txns = await WalletRepo(session).list_pending_topups()
     await query.message.edit_text(
-        f"ðŸ’° <b>PENDING TOP-UPS</b>\n\n{len(txns)} request(s) awaiting review.", reply_markup=_list_keyboard(txns)
+        f"💰 <b>PENDING TOP-UPS</b>\n\n{len(txns)} request(s) awaiting review.", reply_markup=_list_keyboard(txns)
     )
 
 

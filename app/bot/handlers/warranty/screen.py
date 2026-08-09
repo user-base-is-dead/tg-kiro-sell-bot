@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.bot.callbacks import NavCB
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.common import back_keyboard, with_nav
+from app.bot.keyboards.common import back_keyboard
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.database.models.order import WarrantyStatus
 from app.database.models.user import User
@@ -45,7 +45,17 @@ async def _render_warranty(repo, user: User, page_num: int = 1) -> tuple[str, In
     warranties = await repo.list_for_user(user.id, limit=PAGE_SIZE, offset=page.offset)
 
     if not warranties:
-        text = "🔧 <b>WARRANTY</b>\n\nYou have no active warranties yet."
+        text = (
+            "🛡️ <b>WARRANTY</b>\n\n"
+            "You don't have any warranties yet.\n\n"
+            "Every eligible product you buy comes with a warranty that starts automatically "
+            "at the moment of purchase — nothing to register.\n\n"
+            "Here you'll be able to:\n"
+            "• See each warranty's start and expiry date\n"
+            "• Check how much time is left\n"
+            "• File a claim if something stops working\n\n"
+            "🛒 Make your first purchase and it will show up right here."
+        )
         return text, back_keyboard(user.locale)
 
     blocks = []

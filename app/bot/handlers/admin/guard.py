@@ -42,6 +42,8 @@ _ADMIN_COMMANDS = (
     "open_tickets",
     "close",
     "broadcast_status",
+    "done",
+    "reject",
 )
 
 # CallbackData prefixes owned by the admin routers (see app/bot/callbacks.py).

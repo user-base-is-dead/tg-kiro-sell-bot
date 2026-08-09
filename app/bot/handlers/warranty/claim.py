@@ -9,11 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import NavCB
 from app.bot.keyboards.common import back_keyboard
 from app.database.models.order import WarrantyStatus
-from app.database.models.wallet import TxnType
 from app.database.repositories.warranty_repo import WarrantyRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.models.user import User
-from app.locales.i18n import t
 from app.utils.money import format_minor
 
 router = Router(name="warranty.claim")

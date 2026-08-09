@@ -10,9 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.filters.is_admin import IsAdmin
 from app.database.models.order import WarrantyStatus
 from app.database.repositories.warranty_repo import WarrantyRepo
-from app.database.repositories.support_repo import SupportRepo
 from app.database.models.user import User
-from app.utils.errors import UserError
 
 router = Router(name="admin.warranty_claims")
 router.message.filter(IsAdmin())

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -26,7 +26,7 @@ router.callback_query.filter(IsAdmin())
 @router.callback_query(AdminMiscCB.filter(F.action == "users"))
 async def prompt_search(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserSearchForm.query)
-    await query.message.edit_text("ðŸ‘¥ <b>USERS</b>\n\nSend a Telegram ID or @username to search (or /cancel):")
+    await query.message.edit_text("👥 <b>USERS</b>\n\nSend a Telegram ID or @username to search (or /cancel):")
     await query.answer()
 
 
@@ -38,7 +38,7 @@ async def cancel_search(message: Message, state: FSMContext) -> None:
 
 def _detail_keyboard(target) -> InlineKeyboardMarkup:
     banned = target.status == UserStatus.BANNED
-    toggle = ("âœ… Unban", "unban") if banned else ("ðŸš« Ban", "ban")
+    toggle = ("✅ Unban", "unban") if banned else ("🚫 Ban", "ban")
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -55,15 +55,15 @@ def _detail_keyboard(target) -> InlineKeyboardMarkup:
 async def _render_detail(session: AsyncSession, target) -> str:
     wallet = await WalletRepo(session).get_or_create(target.id, currency=get_settings().default_currency)
     orders = await OrderRepo(session).count_for_user(target.id)
-    username = f"@{target.username}" if target.username else "â€”"
+    username = f"@{target.username}" if target.username else "—"
     return (
-        f"ðŸ‘¤ <b>{target.first_name or username}</b>\n\n"
+        f"👤 <b>{target.first_name or username}</b>\n\n"
         f"Username: {username}\n"
         f"ID: <code>{target.telegram_id}</code>\n"
         f"Status: {target.status.value}\n\n"
-        f"ðŸ“¦ Orders: {orders}\n"
-        f"ðŸ’³ Balance: {format_minor(wallet.balance_minor, wallet.currency)}\n"
-        f"ðŸ“… First seen: {target.first_seen_at:%d %b %Y}"
+        f"📦 Orders: {orders}\n"
+        f"💳 Balance: {format_minor(wallet.balance_minor, wallet.currency)}\n"
+        f"📅 First seen: {target.first_seen_at:%d %b %Y}"
     )
 
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminGiftCB
 from app.bot.filters.is_admin import IsAdmin
-from app.bot.keyboards.styles import PRIMARY, btn
+from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.bot.states.gift_form import GiftCreateForm
 from app.core.config import get_settings
 from app.database.repositories.audit_repo import AuditRepo
@@ -27,14 +27,14 @@ def _list_keyboard(gifts: list) -> InlineKeyboardMarkup:
     rows = [
         [
             btn(
-                f"{'ðŸŸ¢' if g.status.value == 'ACTIVE' else 'âš«'} ****{g.code_last4} â€” {format_minor(g.value_minor, g.currency)} ({g.used_count}/{g.max_uses})",
+                f"{'🟢' if g.status.value == 'ACTIVE' else '⚫'} ****{g.code_last4} — {format_minor(g.value_minor, g.currency)} ({g.used_count}/{g.max_uses})",
                 AdminGiftCB(action="view", id=str(g.id)).pack(),
                 PRIMARY if g.status.value == "ACTIVE" else NEUTRAL,
             )
         ]
         for g in gifts
     ]
-    rows.append([btn("âž• Create Gift Code", AdminGiftCB(action="add").pack(), PRIMARY)])
+    rows.append([btn("➕ Create Gift Code", AdminGiftCB(action="add").pack(), PRIMARY)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -42,7 +42,7 @@ def _list_keyboard(gifts: list) -> InlineKeyboardMarkup:
 async def list_gifts(query: CallbackQuery, session: AsyncSession) -> None:
     gifts = await GiftRepo(session).list_all()
     await query.message.edit_text(
-        f"ðŸŽ <b>GIFT CODES</b>\n\n{len(gifts)} code(s).", reply_markup=_list_keyboard(gifts)
+        f"🎁 <b>GIFT CODES</b>\n\n{len(gifts)} code(s).", reply_markup=_list_keyboard(gifts)
     )
     await query.answer()
 
@@ -55,7 +55,7 @@ async def view_gift(query: CallbackQuery, callback_data: AdminGiftCB, session: A
         return
     expires_line = f"Expires: {gift.expires_at:%d %b %Y}\n" if gift.expires_at else "Expires: never\n"
     text = (
-        f"ðŸŽ <b>****{gift.code_last4}</b>\n\n"
+        f"🎁 <b>****{gift.code_last4}</b>\n\n"
         f"Value: {format_minor(gift.value_minor, gift.currency)}\n"
         f"Uses: {gift.used_count}/{gift.max_uses}\n"
         f"Per-user limit: {gift.per_user_limit}\n"
@@ -65,7 +65,7 @@ async def view_gift(query: CallbackQuery, callback_data: AdminGiftCB, session: A
     await query.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[btn("ðŸ”™ Back", AdminGiftCB(action="list").pack(), PRIMARY)]]
+            inline_keyboard=[[btn("🔙 Back", AdminGiftCB(action="list").pack(), PRIMARY)]]
         ),
     )
     await query.answer()
@@ -77,7 +77,7 @@ async def view_gift(query: CallbackQuery, callback_data: AdminGiftCB, session: A
 @router.callback_query(AdminGiftCB.filter(F.action == "add"))
 async def start_add(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(GiftCreateForm.value)
-    await query.message.edit_text("âž• <b>Create Gift Code</b>\n\nSend the value, e.g. 10.00 (or /cancel):")
+    await query.message.edit_text("➕ <b>Create Gift Code</b>\n\nSend the value, e.g. 10.00 (or /cancel):")
     await query.answer()
 
 
@@ -153,8 +153,8 @@ async def set_expires_days(message: Message, state: FSMContext, session: AsyncSe
     )
     await state.clear()
     await message.answer(
-        f"âœ… Gift code created:\n\n<code>{plaintext_code}</code>\n\n"
-        f"âš ï¸ This code is shown once â€” save it now. Only the last 4 characters are stored."
+        f"✅ Gift code created:\n\n<code>{plaintext_code}</code>\n\n"
+        f"⚠️ This code is shown once — save it now. Only the last 4 characters are stored."
     )
 
 
