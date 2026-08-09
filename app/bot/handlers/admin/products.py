@@ -41,6 +41,16 @@ router.callback_query.filter(IsAdmin())
 
 PAGE_SIZE = 10
 
+# A bubble and its inline keyboard share one width, and Telegram takes the wider of the two. The
+# detail screen's longest real line is "Category: Uncategorized" at 23 chars, so without this the
+# text is the narrower side and squeezes the whole button column to match.
+#
+# U+2800 BRAILLE PATTERN BLANK, ×30. Ordinary spaces are trimmed from message text and would widen
+# nothing; U+2800 is printable, survives the trim, and renders as nothing. Same character and same
+# reason as BLANK in app/bot/panel.py. 30 clears the 23-char line with room to spare while staying
+# under the ~35 chars where the pad itself would wrap and show up as an unexplained blank gap.
+PAD = "⠀" * 30
+
 # The wizard's step order. Back walks one entry left; Abort leaves entirely. Keeping the order in
 # one tuple means a new step cannot be added without also being reachable by Back.
 _PRODUCT_STEPS: tuple[str, ...] = (
@@ -210,7 +220,8 @@ async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, I
         f"Fulfillment: {product.fulfillment_mode.value}\n"
         f"Warranty: {product.warranty_days} days\n"
         f"Description: {product.description or '—'}\n"
-        f"Delivery info: {product.delivery_info or '—'}"
+        f"Delivery info: {product.delivery_info or '—'}\n"
+        f"{PAD}"
     )
     return text, _detail_keyboard(product)
 
