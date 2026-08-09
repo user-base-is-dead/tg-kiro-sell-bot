@@ -10,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminMiscCB
 from app.bot.filters.is_admin import IsAdmin
-from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
+from app.bot.keyboards.common import back_keyboard
+from app.bot.keyboards.styles import DANGER, SUCCESS, btn
 from app.bot.states.broadcast_form import BroadcastForm
 from app.core.config import get_settings
+from app.database.models.user import User
 from app.database.repositories.audit_repo import AuditRepo
 from app.services.broadcast_service import create_broadcast, run_worker
 
@@ -21,36 +23,48 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
+def _abort_keyboard() -> InlineKeyboardMarkup:
+    """Every step of the broadcast form carries this, so a half-filled draft is never a dead end
+    the admin can only leave by remembering to type /cancel."""
+    return InlineKeyboardMarkup(inline_keyboard=[[btn("❌ Abort", "broadcast_abort", DANGER)]])
+
+
 @router.callback_query(AdminMiscCB.filter(F.action == "broadcast"))
 async def start_broadcast(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BroadcastForm.title)
-    await query.message.edit_text("📢 <b>Broadcast</b>\n\nSend a short internal title for this broadcast (or /cancel):")
+    await query.message.edit_text(
+        "📢 <b>Broadcast</b>\n\nSend a short internal title for this broadcast (or /cancel):",
+        reply_markup=_abort_keyboard(),
+    )
     await query.answer()
 
 
 @router.message(Command("cancel"), BroadcastForm.title)
 @router.message(Command("cancel"), BroadcastForm.body)
-async def cancel_broadcast(message: Message, state: FSMContext) -> None:
+async def cancel_broadcast(message: Message, state: FSMContext, user: User) -> None:
     await state.clear()
-    await message.answer("Cancelled.")
+    await message.answer("❌ Broadcast cancelled.", reply_markup=back_keyboard(user.locale, target="admin_panel"))
 
 
 @router.message(BroadcastForm.title)
 async def set_title(message: Message, state: FSMContext) -> None:
     title = (message.text or "").strip()
     if not title:
-        await message.answer("Please send a short title:")
+        await message.answer("Please send a short title:", reply_markup=_abort_keyboard())
         return
     await state.update_data(title=title)
     await state.set_state(BroadcastForm.body)
-    await message.answer("Now send the message body (HTML formatting supported):")
+    await message.answer(
+        "Now send the message body (HTML formatting supported):",
+        reply_markup=_abort_keyboard(),
+    )
 
 
 @router.message(BroadcastForm.body)
 async def set_body(message: Message, state: FSMContext) -> None:
     body = message.html_text or message.text or ""
     if not body:
-        await message.answer("Please send some text:")
+        await message.answer("Please send some text:", reply_markup=_abort_keyboard())
         return
     await state.update_data(body=body)
     await state.set_state(BroadcastForm.confirm)
@@ -82,10 +96,13 @@ async def confirm_send(query: CallbackQuery, state: FSMContext, session: AsyncSe
     asyncio.create_task(run_worker(query.message.bot, settings.database_url, broadcast.id))  # noqa: RUF006 — fire-and-forget worker
 
 
-@router.callback_query(F.data == "broadcast_abort", BroadcastForm.confirm)
-async def abort_broadcast(query: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "broadcast_abort")
+async def abort_broadcast(query: CallbackQuery, state: FSMContext, user: User) -> None:
     await state.clear()
-    await query.message.edit_text("❌ Broadcast cancelled.")
+    await query.message.edit_text(
+        "❌ Broadcast cancelled.",
+        reply_markup=back_keyboard(user.locale, target="admin_panel"),
+    )
     await query.answer()
 
 
