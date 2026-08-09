@@ -12,7 +12,7 @@ from app.database.repositories.settings_repo import SettingsRepo
 # ever becomes a hot path.
 
 DEFAULTS: dict[str, Any] = {
-    "referral_reward_minor": 500,  # 5.00 in default currency
+    "referral_reward_minor": 10,  # 0.10 in default currency
     "referral_qualify_on": "first_completed_order",
 }
 
