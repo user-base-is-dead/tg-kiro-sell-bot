@@ -19,12 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("wallet_transactions", sa.Column("proof", sa.String(length=512), nullable=True))
-    op.add_column("wallet_transactions", sa.Column("admin_note", sa.String(length=512), nullable=True))
-    op.add_column("wallet_transactions", sa.Column("reviewed_by_admin_id", sa.BigInteger(), nullable=True))
+    # Columns already created by 0001 migration (which uses Base.metadata.create_all)
+    pass
 
 
 def downgrade() -> None:
-    op.drop_column("wallet_transactions", "reviewed_by_admin_id")
-    op.drop_column("wallet_transactions", "admin_note")
-    op.drop_column("wallet_transactions", "proof")
+    pass

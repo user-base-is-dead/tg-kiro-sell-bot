@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aiogram import F
@@ -39,8 +39,8 @@ async def render_topup_packages(locale: str, show_title: bool = True) -> tuple[s
         text = "Choose an amount to top up your wallet with USDT (BNB Chain):\n"
     rows = [
         [
-            __import__("aiogram").types.InlineKeyboardButton(
-                pkg["label"],
+            InlineKeyboardButton(
+                text=pkg["label"],
                 callback_data=f"topup_crypto:{pkg_id}",
             )
             for pkg_id, pkg in list(TOPUP_PACKAGES.items())[i : i + 2]
@@ -97,8 +97,8 @@ async def render_payment_details(
 
     rows = [
         [
-            __import__("aiogram").types.InlineKeyboardButton(
-                "✓ Check Payment Status",
+            InlineKeyboardButton(
+                text="✓ Check Payment Status",
                 callback_data=f"check_topup_crypto:{payment.id}",
             )
         ],
