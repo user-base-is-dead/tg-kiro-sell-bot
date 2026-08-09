@@ -74,8 +74,7 @@
     "confirm_body": "{name}\n\n💰 Price: {price}\n💳 Your balance: {balance}\n\nConfirm this purchase?",
     "placed": "✅ Order <code>{order_number}</code> placed!",
     "auto_delivery": "📬 <b>Here's your item:</b>\n\n<code>{payload}</code>\n\n🛡️ Warranty: {warranty_days} days.",
-    "manual_pending": "⏳ Your order is being processed by our team and will be delivered shortly.",
-    "empty_history": "📦 You don't have any orders yet.",
+    "empty_history": "📦 <b>MY ORDERS</b>\n\n🛍️ No purchases yet! Browse our store to find amazing products and make your first purchase today. Your orders will appear here once you buy something.",
     "history_title": "📦 <b>MY ORDERS</b>"
   }
 }
