@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 
 async def test_product_screen_explains_what_the_buttons_do(monkeypatch) -> None:
     """The whole body used to be "5 products total." — the panel above it documents every button,
