@@ -10,12 +10,19 @@ def format_minor(amount_minor: int, currency: str) -> str:
 
 
 def parse_to_minor(text: str) -> int:
-    """'9.99' -> 999. Raises ValueError on anything that isn't a plain decimal amount."""
+    """'9.99' -> 999. Raises ValueError on anything that isn't a plain decimal amount.
+
+    A leading '+' is accepted as well as '-'. It has to be: the signed form is how an admin states
+    the direction of a manual balance adjustment, and only '-' parsing meant every credit was
+    rejected as invalid while every debit went through.
+    """
     text = text.strip().replace(",", "")
     if not text:
         raise ValueError("empty amount")
     negative = text.startswith("-")
-    text = text.removeprefix("-")
+    text = text[1:] if text[0] in "+-" else text
+    if not text:
+        raise ValueError("sign with no amount")
     if "." in text:
         major_s, minor_s = text.split(".", 1)
         minor_s = (minor_s + "00")[:2]

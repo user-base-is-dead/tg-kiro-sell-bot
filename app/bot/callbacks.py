@@ -83,5 +83,6 @@ class AdminMiscCB(CallbackData, prefix="amisc"):
 
 
 class AdminUserCB(CallbackData, prefix="auser"):
-    action: str  # "view" | "ban" | "unban"
+    action: str  # "list" | "view" | "ban" | "unban" | "credit" | "search"
     id: str = ""
+    page: int = 1

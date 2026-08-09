@@ -35,8 +35,10 @@ def test_user_detail_offers_a_way_back() -> None:
     from app.database.models.user import UserStatus
 
     target = SimpleNamespace(id=1, status=UserStatus.ACTIVE)
+    targets = _targets(_detail_keyboard(target, page=3))
 
-    assert "nav:admin_panel" in _targets(_detail_keyboard(target))
+    assert "nav:admin_panel" in targets
+    assert "auser:list::3" in targets, "Back must return to the page the profile was opened from"
 
 
 async def test_gift_list_offers_a_way_back(monkeypatch) -> None:

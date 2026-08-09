@@ -45,6 +45,37 @@ async def credit(
     return txn
 
 
+async def admin_adjust(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    amount_minor: int,
+    currency: str,
+    reason: str,
+) -> WalletTransaction:
+    """A signed manual adjustment: positive credits, negative debits. One place for it so the
+    /adjust_balance command and the button on a user's profile cannot drift apart — they must write
+    the same transaction type and the same audit-visible ref, or the ledger stops being readable.
+
+    Raises UserError when a debit would take the balance below zero.
+    """
+    if amount_minor == 0:
+        raise UserError("Amount can't be zero.")
+
+    key = new_idempotency_key()
+    mover = credit if amount_minor > 0 else debit
+    return await mover(
+        session,
+        user_id=user_id,
+        amount_minor=abs(amount_minor),
+        currency=currency,
+        type_=TxnType.ADMIN_ADJUST,
+        idempotency_key=key,
+        ref_type="admin_adjust",
+        ref_id=reason[:64],
+    )
+
+
 async def create_pending_topup(
     session: AsyncSession, *, user_id: int, amount_minor: int, currency: str, proof: str
 ) -> WalletTransaction:

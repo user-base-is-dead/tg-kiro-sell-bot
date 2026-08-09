@@ -22,7 +22,7 @@ from app.bot.states.product_form import (
     StockUploadForm,
 )
 from app.bot.states.settings_form import SettingsForm
-from app.bot.states.user_search_form import UserSearchForm
+from app.bot.states.user_search_form import UserBalanceForm, UserSearchForm
 from app.database.models.user import User
 from app.database.repositories.audit_repo import AuditRepo
 from app.locales.i18n import t
@@ -75,6 +75,7 @@ _ADMIN_STATE_GROUPS = (
     ProductSearchForm,
     SettingsForm,
     StockUploadForm,
+    UserBalanceForm,
     UserSearchForm,
 )
 

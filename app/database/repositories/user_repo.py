@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.user import User
@@ -27,6 +27,18 @@ class UserRepo:
     async def get_by_referral_code(self, code: str) -> User | None:
         result = await self._session.execute(select(User).where(User.referral_code == code))
         return result.scalar_one_or_none()
+
+    async def list_page(self, *, offset: int, limit: int) -> list[User]:
+        """Oldest signup first, so the list reads as a join history: row 1 is member #1 and the
+        bottom row is the newest arrival. Ordered by id as a tiebreak because first_seen_at carries
+        a server default and several rows can share a timestamp on a bulk insert."""
+        stmt = select(User).order_by(User.first_seen_at, User.id).offset(offset).limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_all(self) -> int:
+        result = await self._session.execute(select(func.count()).select_from(User))
+        return int(result.scalar_one())
 
     async def search(self, query: str, limit: int = 10) -> list[User]:
         query = query.strip().lstrip("@")

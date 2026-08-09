@@ -7,8 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters.is_admin import IsAdmin
 from app.core.config import get_settings
-from app.core.security import new_idempotency_key
-from app.database.models.wallet import TxnType
 from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.user_repo import UserRepo
 from app.services import wallet_service
@@ -51,31 +49,17 @@ async def adjust_balance(message: Message, command: CommandObject, session: Asyn
         return
 
     currency = get_settings().default_currency
-    key = new_idempotency_key()
 
     try:
-        if amount_minor > 0:
-            txn = await wallet_service.credit(
-                session,
-                user_id=target.id,
-                amount_minor=amount_minor,
-                currency=currency,
-                type_=TxnType.ADMIN_ADJUST,
-                idempotency_key=key,
-                ref_type="admin_adjust",
-                ref_id=reason[:64],
-            )
-        else:
-            txn = await wallet_service.debit(
-                session,
-                user_id=target.id,
-                amount_minor=-amount_minor,
-                currency=currency,
-                type_=TxnType.ADMIN_ADJUST,
-                idempotency_key=key,
-                ref_type="admin_adjust",
-                ref_id=reason[:64],
-            )
+        # Shared with the 💳 button on a user's admin profile, so both write the same transaction
+        # type and the same audit-visible ref.
+        txn = await wallet_service.admin_adjust(
+            session,
+            user_id=target.id,
+            amount_minor=amount_minor,
+            currency=currency,
+            reason=reason,
+        )
     except UserError:
         await message.answer("That user's balance can't go negative.")
         return
