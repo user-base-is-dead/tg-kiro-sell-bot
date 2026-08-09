@@ -51,9 +51,22 @@ def _detail_keyboard(order_id: str) -> InlineKeyboardMarkup:
 
 @router.callback_query(AdminOrderCB.filter(F.action == "list"))
 @router.message(Command("pending_orders"))
+def _list_text(count: int) -> str:
+    return (
+        "🛒 <b>PENDING FULFILLMENT</b>\n\n"
+        f"{count} order(s) awaiting manual delivery.\n\n"
+        "Only <b>Manual</b> products land here — an Auto product delivers its own stock item the "
+        "moment payment clears, so it never needs you.\n\n"
+        "Tap an order to see what was bought, then:\n"
+        "✅ <b>Fulfill</b> — send the buyer their content and mark it delivered\n"
+        "🔴 <b>Cancel &amp; Refund</b> — return the money to their wallet\n\n"
+        "An empty list is the healthy state."
+    )
+
+
 async def list_pending(event, session: AsyncSession) -> None:
     orders = await OrderRepo(session).list_pending_manual()
-    text = f"🛒 <b>PENDING FULFILLMENT</b>\n\n{len(orders)} order(s) awaiting manual delivery."
+    text = _list_text(len(orders))
     markup = _list_keyboard(orders)
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(text, reply_markup=markup)
@@ -87,10 +100,7 @@ async def cancel_order(query: CallbackQuery, callback_data: AdminOrderCB, sessio
     )
     await query.answer("Order cancelled and refunded.")
     orders = await OrderRepo(session).list_pending_manual()
-    await query.message.edit_text(
-        f"🛒 <b>PENDING FULFILLMENT</b>\n\n{len(orders)} order(s) awaiting manual delivery.",
-        reply_markup=_list_keyboard(orders),
-    )
+    await query.message.edit_text(_list_text(len(orders)), reply_markup=_list_keyboard(orders))
 
 
 @router.callback_query(AdminOrderCB.filter(F.action == "fulfill"))

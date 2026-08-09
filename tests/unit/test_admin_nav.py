@@ -39,6 +39,24 @@ def test_user_detail_offers_a_way_back() -> None:
     assert "nav:admin_panel" in _targets(_detail_keyboard(target))
 
 
+async def test_gift_list_offers_a_way_back(monkeypatch) -> None:
+    """Found while fixing the other four: the Gift Codes list had no escape either."""
+    import app.bot.handlers.admin.gifts as gifts
+
+    class _EmptyRepo:
+        def __init__(self, _session):
+            pass
+
+        async def list_all(self):
+            return []
+
+    monkeypatch.setattr(gifts, "GiftRepo", _EmptyRepo)
+
+    _text, markup = await gifts._render_list(None)
+
+    assert "nav:admin_panel" in _targets(markup)
+
+
 def test_back_button_is_red() -> None:
     """nav_row's convention: leaving a screen is always red, on every screen in the bot."""
     from app.bot.handlers.admin.categories import _list_keyboard

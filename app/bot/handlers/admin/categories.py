@@ -3,14 +3,14 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminCategoryCB
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.keyboards.common import nav_row
-from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
+from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.bot.states.category_form import CategoryForm
 from app.database.models.user import User
 from app.database.repositories.category_repo import CategoryRepo
@@ -19,6 +19,31 @@ from app.services.catalog_service import create_category
 router = Router(name="admin.categories")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
+
+# Same shape as the product wizard's step tuple, for the same reason: Back walks one entry left, so
+# a new step cannot be added without also being reachable.
+_CATEGORY_STEPS: tuple[str, ...] = ("name", "emoji", "description")
+
+_CAT_STEP_STATES = {
+    "name": CategoryForm.name,
+    "emoji": CategoryForm.emoji,
+    "description": CategoryForm.description,
+}
+
+
+def _cat_step_keyboard(
+    step: str, *, extra: list[list[InlineKeyboardButton]] | None = None
+) -> InlineKeyboardMarkup:
+    rows = list(extra or [])
+    if step in ("emoji", "description"):
+        rows.append([btn("⏭️ Skip", f"cskip:{step}", PRIMARY)])
+    rows.append(
+        [
+            btn("🔙 Back", f"cback:{step}", DANGER),
+            btn("❌ Abort", "cabort", DANGER),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _list_keyboard(categories: list) -> InlineKeyboardMarkup:
@@ -35,7 +60,7 @@ def _list_keyboard(categories: list) -> InlineKeyboardMarkup:
                 )
             ]
         )
-    rows.append([btn("➕ Add Category", AdminCategoryCB(action="add").pack(), PRIMARY)])
+    rows.append([btn("➕ Add Category", AdminCategoryCB(action="add").pack(), SUCCESS)])
     rows.append(nav_row("en", back_target="admin_panel", home=False))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -48,22 +73,19 @@ def _detail_keyboard(category) -> InlineKeyboardMarkup:
                 btn(
                     toggle_label,
                     AdminCategoryCB(action="toggle", id=str(category.id)).pack(),
-                    PRIMARY,
+                    DANGER if category.is_active else SUCCESS,
                 )
             ],
-            [btn("🗑️ Delete", AdminCategoryCB(action="delete", id=str(category.id)).pack(), PRIMARY)],
-            [btn("🔙 Back", AdminCategoryCB(action="list").pack(), PRIMARY)],
+            [btn("🗑️ Delete", AdminCategoryCB(action="delete", id=str(category.id)).pack(), DANGER)],
+            [btn("🔙 Back", AdminCategoryCB(action="list").pack(), DANGER)],
         ]
     )
 
 
 @router.callback_query(AdminCategoryCB.filter(F.action == "list"))
 async def list_categories(query: CallbackQuery, session: AsyncSession) -> None:
-    categories = await CategoryRepo(session).list_all()
-    text = "📁 <b>CATEGORY MANAGEMENT</b>\n\n" + (
-        "No categories yet." if not categories else f"{len(categories)} categories."
-    )
-    await query.message.edit_text(text, reply_markup=_list_keyboard(categories))
+    text, markup = await _render_cat_list(session)
+    await query.message.edit_text(text, reply_markup=markup)
     await query.answer()
 
 
@@ -117,10 +139,85 @@ async def delete_category(query: CallbackQuery, callback_data: AdminCategoryCB, 
 # ---- Add Category wizard ----
 
 
+async def _show_cat_step(
+    message: Message, state: FSMContext, step: str, *, edit: bool = True
+) -> None:
+    """One renderer per step, shared by forward progress and by Back."""
+    await state.set_state(_CAT_STEP_STATES[step])
+    number = _CATEGORY_STEPS.index(step) + 1
+    head = f"➕ <b>Add Category</b> — step {number} of {len(_CATEGORY_STEPS)}\n\n"
+    send = message.edit_text if edit else message.answer
+
+    if step == "name":
+        await send(
+            f"{head}Send the category name (1-128 characters). Buyers see this as a folder in "
+            "the store.",
+            reply_markup=_cat_step_keyboard("name"),
+        )
+    elif step == "emoji":
+        await send(
+            f"{head}Send one emoji to show beside the name, or skip it and 📁 is used.",
+            reply_markup=_cat_step_keyboard("emoji"),
+        )
+    else:
+        await send(
+            f"{head}Send a short description, or skip it.",
+            reply_markup=_cat_step_keyboard("description"),
+        )
+
+
 @router.callback_query(AdminCategoryCB.filter(F.action == "add"))
 async def start_add(query: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(CategoryForm.name)
-    await query.message.edit_text("➕ <b>Add Category</b>\n\nSend the category name (or /cancel):")
+    await state.clear()
+    await _show_cat_step(query.message, state, "name")
+    await query.answer()
+
+
+async def _render_cat_list(session: AsyncSession) -> tuple[str, InlineKeyboardMarkup]:
+    categories = await CategoryRepo(session).list_all()
+    active = sum(1 for c in categories if c.is_active)
+    text = (
+        "📁 <b>CATEGORY MANAGEMENT</b>\n\n"
+        f"{len(categories)} category(ies) · {active} visible to buyers\n\n"
+        "Categories are the folders buyers browse. A product does not need one — leave its "
+        "category empty and it is listed on its own above the folders.\n\n"
+        "<b>Buttons:</b>\n"
+        "➕ <b>Add Category</b> — name it, pick an emoji, done\n"
+        "Tap any category to rename nothing but toggle or delete it.\n\n"
+        "🟢 = visible to buyers · ⚫ = hidden"
+    )
+    return text, _list_keyboard(categories)
+
+
+@router.callback_query(F.data == "cabort")
+async def abort_cat_wizard(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    text, markup = await _render_cat_list(session)
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer("Cancelled.")
+
+
+@router.callback_query(F.data.startswith("cback:"))
+async def back_one_cat_step(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """First-step Back exits, exactly as the product wizard does — there is nothing behind it."""
+    step = query.data.removeprefix("cback:")
+    if step not in _CATEGORY_STEPS or _CATEGORY_STEPS.index(step) == 0:
+        await abort_cat_wizard(query, state, session)
+        return
+    await _show_cat_step(query.message, state, _CATEGORY_STEPS[_CATEGORY_STEPS.index(step) - 1])
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("cskip:"))
+async def skip_cat_step(
+    query: CallbackQuery, state: FSMContext, session: AsyncSession, user: User
+) -> None:
+    field = query.data.removeprefix("cskip:")
+    if field == "emoji":
+        await state.update_data(emoji=None)
+        await _show_cat_step(query.message, state, "description")
+    elif field == "description":
+        await _finish_category(query.message, state, session, description=None)
     await query.answer()
 
 
@@ -139,29 +236,41 @@ async def set_name(message: Message, state: FSMContext) -> None:
         await message.answer("Please send a valid name (1-128 chars):")
         return
     await state.update_data(name=name)
-    await state.set_state(CategoryForm.emoji)
-    await message.answer("Send an emoji for this category (or 'skip'):")
+    await _show_cat_step(message, state, "emoji", edit=False)
 
 
 @router.message(CategoryForm.emoji)
 async def set_emoji(message: Message, state: FSMContext) -> None:
+    """The typed 'skip' stays as a fallback beside the Skip button."""
     text = (message.text or "").strip()
     emoji = None if text.lower() == "skip" else text[:16]
     await state.update_data(emoji=emoji)
-    await state.set_state(CategoryForm.description)
-    await message.answer("Send a short description (or 'skip'):")
+    await _show_cat_step(message, state, "description", edit=False)
 
 
-@router.message(CategoryForm.description)
-async def set_description(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
-    text = (message.text or "").strip()
-    description = None if text.lower() == "skip" else text[:1024]
+async def _finish_category(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    *,
+    description: str | None,
+    edit: bool = True,
+) -> None:
+    """The single exit from the category wizard, whether the description was typed or skipped."""
     data = await state.get_data()
-
     category_id = await create_category(
         session, name=data["name"], emoji=data.get("emoji"), description=description, image_file_id=None
     )
     await session.flush()
     await state.clear()
 
-    await message.answer(f"✅ Category <b>{data['name']}</b> created (id {category_id}).")
+    text, markup = await _render_cat_list(session)
+    body = f"✅ Category <b>{data['name']}</b> created (id {category_id}).\n\n{text}"
+    await (message.edit_text if edit else message.answer)(body, reply_markup=markup)
+
+
+@router.message(CategoryForm.description)
+async def set_description(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
+    text = (message.text or "").strip()
+    description = None if text.lower() == "skip" else text[:1024]
+    await _finish_category(message, state, session, description=description, edit=False)
