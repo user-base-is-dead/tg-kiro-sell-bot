@@ -85,6 +85,7 @@ async def start_add(query: CallbackQuery, state: FSMContext) -> None:
 @router.message(Command("cancel"), GiftCreateForm.max_uses)
 @router.message(Command("cancel"), GiftCreateForm.per_user_limit)
 @router.message(Command("cancel"), GiftCreateForm.expires_days)
+@router.message(Command("cancel"), GiftCreateForm.description)
 async def cancel_add(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Cancelled.")
@@ -127,14 +128,21 @@ async def set_per_user_limit(message: Message, state: FSMContext) -> None:
 
 
 @router.message(GiftCreateForm.expires_days)
-async def set_expires_days(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
+async def set_expires_days(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text.isdigit():
         await message.answer("Please send a whole number of days (0 for never):")
         return
     days = int(text)
     expires_at = datetime.now(UTC) + timedelta(days=days) if days > 0 else None
+    await state.update_data(expires_at=expires_at)
+    await state.set_state(GiftCreateForm.description)
+    await message.answer("Add a description for users to see (or /cancel to skip):")
 
+
+@router.message(GiftCreateForm.description)
+async def set_description(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
+    description = (message.text or "").strip() if message.text else None
     data = await state.get_data()
     plaintext_code = await create_gift_code(
         session,
@@ -142,8 +150,9 @@ async def set_expires_days(message: Message, state: FSMContext, session: AsyncSe
         currency=get_settings().default_currency,
         max_uses=data["max_uses"],
         per_user_limit=data["per_user_limit"],
-        expires_at=expires_at,
+        expires_at=data.get("expires_at"),
         admin_id=user.telegram_id,
+        description=description,
     )
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id,

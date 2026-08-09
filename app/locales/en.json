@@ -45,6 +45,7 @@
   },
   "gift": {
     "prompt": "🎁 <b>Free Gift</b>\n\nHave a gift code? Send it here and its value will be added to your wallet instantly.\n\n✏️ Type your code below:",
+    "default_description": "Claim your free gift and add instant credit to your wallet!",
     "invalid_code": "📭 No gifts available right now.",
     "not_active": "📭 No gifts available right now.",
     "expired": "📭 No gifts available right now.",

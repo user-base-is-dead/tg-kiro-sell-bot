@@ -11,7 +11,7 @@ from app.utils.errors import UserError
 
 async def _make_user(sessionmaker, telegram_id: int):
     async with sessionmaker() as session:
-        user = await UserRepo(session).upsert_from_telegram(
+        user, _ = await UserRepo(session).upsert_from_telegram(
             telegram_id=telegram_id, username=f"user{telegram_id}", first_name="T", last_name=None,
             chat_id=telegram_id, default_locale="en",
         )

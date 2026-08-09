@@ -2,6 +2,7 @@ from app.database.models.admin import Admin, AdminRole
 from app.database.models.audit import AuditLog
 from app.database.models.broadcast import Broadcast, BroadcastDelivery, BroadcastStatus, DeliveryStatus
 from app.database.models.catalog import Category, FulfillmentMode, Product, ProductStatus, StockItem, StockStatus
+from app.database.models.crypto import CryptoPayment
 from app.database.models.gift import GiftCode, GiftRedemption, GiftStatus
 from app.database.models.interaction_state import InteractionState
 from app.database.models.order import Delivery, Order, OrderItem, OrderStatus, Warranty, WarrantyStatus
@@ -25,6 +26,7 @@ __all__ = [
     "ProductStatus",
     "StockItem",
     "StockStatus",
+    "CryptoPayment",
     "GiftCode",
     "GiftRedemption",
     "GiftStatus",

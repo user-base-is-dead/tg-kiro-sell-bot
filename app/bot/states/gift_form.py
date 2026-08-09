@@ -12,3 +12,4 @@ class GiftCreateForm(StatesGroup):
     max_uses = State()
     per_user_limit = State()
     expires_days = State()
+    description = State()

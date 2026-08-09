@@ -19,14 +19,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("warranties") as batch_op:
-        batch_op.add_column(sa.Column("claim_started_at", sa.DateTime(timezone=True), nullable=True))
-        batch_op.add_column(sa.Column("claim_ticket_id", sa.BigInteger(), nullable=True))
-        batch_op.create_index("ix_warranties_claim_ticket_id", ["claim_ticket_id"])
+    # Columns already created by 0001 migration (which uses Base.metadata.create_all)
+    pass
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("warranties") as batch_op:
-        batch_op.drop_index("ix_warranties_claim_ticket_id")
-        batch_op.drop_column("claim_ticket_id")
-        batch_op.drop_column("claim_started_at")
+    pass

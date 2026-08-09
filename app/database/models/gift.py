@@ -29,6 +29,7 @@ class GiftCode(BigIntPKMixin, TimestampMixin, Base):
     status: Mapped[GiftStatus] = mapped_column(Enum(GiftStatus, name="gift_status"), default=GiftStatus.ACTIVE)
     created_by_admin_id: Mapped[int] = mapped_column(BigInteger)
     per_user_limit: Mapped[int] = mapped_column(Integer, default=1)
+    description: Mapped[str | None] = mapped_column(String(512))
 
 
 class GiftRedemption(BigIntPKMixin, Base):
