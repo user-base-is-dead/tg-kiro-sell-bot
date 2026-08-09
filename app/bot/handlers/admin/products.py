@@ -142,7 +142,7 @@ async def delete_product(query: CallbackQuery, callback_data: AdminProductCB, se
 async def start_add(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     categories = await CategoryRepo(session).list_active()
     rows = [[btn(f"{c.emoji or '📦'} {c.name}", f"pickcat:{c.id}", PRIMARY)] for c in categories]
-    rows.append([btn("📁 Uncategorized", "pickcat:0", PRIMARY)])
+    rows.append([btn("🚫 No category", "pickcat:none", PRIMARY)])
     await state.set_state(ProductForm.category)
     await query.message.edit_text("➕ <b>Add Product</b>\n\nChoose a category:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await query.answer()
@@ -150,20 +150,10 @@ async def start_add(query: CallbackQuery, state: FSMContext, session: AsyncSessi
 
 @router.callback_query(F.data.startswith("pickcat:"), ProductForm.category)
 async def pick_category(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    category_id_str = query.data.removeprefix("pickcat:")
-    category_id = int(category_id_str)
-
-    if category_id == 0:
-        repo = CategoryRepo(session)
-        uncat = await repo.get_by_slug("uncategorized")
-        if uncat is None:
-            from app.database.models.catalog import Category
-            uncat = Category(name="Uncategorized", slug="uncategorized", sort_order=9999)
-            session.add(uncat)
-            await session.flush()
-        category_id = uncat.id
-
-    await state.update_data(category_id=category_id)
+    """"none" stores a real NULL. The old branch here fabricated an "Uncategorized" Category row,
+    which then showed up as a folder in the buyer-facing store."""
+    raw = query.data.removeprefix("pickcat:")
+    await state.update_data(category_id=None if raw == "none" else int(raw))
     await state.set_state(ProductForm.name)
     await query.message.edit_text("Send the product name (or /cancel):")
     await query.answer()

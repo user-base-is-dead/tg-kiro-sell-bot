@@ -65,7 +65,7 @@ async def create_category(
 async def create_product(
     session: AsyncSession,
     *,
-    category_id: int,
+    category_id: int | None,
     name: str,
     description: str | None,
     price_minor: int,

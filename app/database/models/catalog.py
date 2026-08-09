@@ -45,7 +45,11 @@ class Category(BigIntPKMixin, TimestampMixin, Base):
 class Product(BigIntPKMixin, TimestampMixin, Base):
     __tablename__ = "products"
 
-    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), index=True)
+    # Nullable: a product can sit outside every category. Picking "no category" used to fabricate a
+    # real Category row named "Uncategorized", which then showed up as a folder in the buyer store.
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id"), index=True, nullable=True
+    )
     name: Mapped[str] = mapped_column(String(128))
     slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     description: Mapped[str | None] = mapped_column(String(2048))
@@ -67,7 +71,7 @@ class Product(BigIntPKMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
-    category: Mapped["Category"] = relationship(back_populates="products")
+    category: Mapped["Category | None"] = relationship(back_populates="products")
     stock_items: Mapped[list["StockItem"]] = relationship(back_populates="product")
 
     __table_args__ = (Index("ix_products_category_active", "category_id", "is_active"),)

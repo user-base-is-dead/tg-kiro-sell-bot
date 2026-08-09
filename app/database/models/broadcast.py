@@ -29,6 +29,11 @@ class Broadcast(BigIntPKMixin, TimestampMixin, Base):
     created_by_admin_id: Mapped[int] = mapped_column(BigInteger)
     title: Mapped[str] = mapped_column(String(256))
     body: Mapped[str] = mapped_column(Text)
+    # The composed message as a list of {"chat_id", "message_id"} pointing at what the admin
+    # actually sent. Delivery is `copy_message` from those coordinates, which reproduces any
+    # content type — photo, video, audio, document, voice, sticker — with no per-type branching
+    # and no re-uploading. NULL on rows created before media support, which send `body` as text.
+    parts_json: Mapped[str | None] = mapped_column(Text)
     image_file_id: Mapped[str | None] = mapped_column(String(256))
     buttons_json: Mapped[str | None] = mapped_column(Text)
     audience_filter_json: Mapped[str | None] = mapped_column(Text)
