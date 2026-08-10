@@ -105,10 +105,13 @@ _STOCK_COUNT_HELP = (
     "How many are on sale?\n\n"
     "Send a number to set it by hand, or leave it automatic and the store will simply count the "
     "credentials you loaded.\n\n"
-    "A hand-set number can go <b>above</b> the credential count: buyers keep getting a credential "
-    "auto-delivered while any are left, and the units beyond that land in your <b>pending "
-    "fulfilment</b> queue to hand over yourself. <code>0</code> closes the product to buyers "
-    "without disabling it."
+    "On <b>⚡ Auto</b> the number may go <b>above</b> the credential count: buyers keep getting a "
+    "credential auto-delivered while any are left, and only the units beyond that land in your "
+    "<b>pending fulfilment</b> queue. The product stays on Auto — the mode button shows the split.\n\n"
+    "On <b>🙋 Manual</b> the number is the whole story: your credentials are frozen and never "
+    "touched, whatever you set here.\n\n"
+    "<code>0</code> closes the product to buyers without disabling it, and without spending a "
+    "single credential."
 )
 
 
@@ -190,7 +193,23 @@ def _list_keyboard(products: list, page: Page, *, name_like: str | None = None) 
     rows.append(nav_row("en", back_target="admin_panel", home=False))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def _detail_keyboard(product) -> InlineKeyboardMarkup:
+def _fulfillment_label(product, credentials: int) -> str:
+    """What will actually happen to the next orders, not just which mode is stored.
+
+    A hand-set count above the credential pool does not switch the product to MANUAL — the pool is
+    still auto-delivered, and only the units past it are hand-fulfilled. The button said plain
+    "Auto" through all of that, which reads as "nothing here needs your attention" about a product
+    that is about to start filling the pending queue.
+    """
+    if product.fulfillment_mode is not FulfillmentMode.AUTO:
+        return "🙋 Fulfillment: Manual"
+    by_hand = (product.manual_stock or 0) - credentials
+    if product.manual_stock is not None and by_hand > 0:
+        return f"🔀 Auto ×{credentials} + Manual ×{by_hand}"
+    return "⚡ Fulfillment: Auto"
+
+
+def _detail_keyboard(product, credentials: int = 0) -> InlineKeyboardMarkup:
     """One flat screen: every field is one tap from the product, not two.
 
     There used to be an `✏️ Edit` button that opened a second screen asking "which field?" — a whole
@@ -211,16 +230,10 @@ def _detail_keyboard(product) -> InlineKeyboardMarkup:
             ],
             [
                 btn("🛡️ Warranty", f"pedit:wr:{pid}", PRIMARY),
-                # The button carries the current mode, not just the field name. Auto and Manual
+                # The button carries the live state, not just the field name. Auto and Manual
                 # behave completely differently at checkout, and "⚡ Fulfillment" gave no way to
                 # tell which one a product was on without opening the editor to find out.
-                btn(
-                    "⚡ Fulfillment: Auto"
-                    if product.fulfillment_mode is FulfillmentMode.AUTO
-                    else "🙋 Fulfillment: Manual",
-                    f"pedit:md:{pid}",
-                    PRIMARY,
-                ),
+                btn(_fulfillment_label(product, credentials), f"pedit:md:{pid}", PRIMARY),
             ],
             [
                 btn("🚚 Delivery info", f"pedit:dv:{pid}", PRIMARY),
@@ -298,12 +311,17 @@ async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, I
         category = found.name if found else "—"
 
     credentials = await ProductRepo(session).available_stock_count(product.id)
-    if product.manual_stock is not None:
+    if product.fulfillment_mode is FulfillmentMode.MANUAL:
+        # Credentials are frozen in MANUAL mode — never claimed, never delivered — so they are
+        # reported as parked rather than omitted. An admin who loaded 34 keys and then switched
+        # modes needs to see that all 34 are still there.
+        parked = f" · {credentials} credential(s) parked, untouched" if credentials else ""
+        on_sale = f"{product.manual_stock} on sale (set by hand)" if product.manual_stock is not None else "unlimited"
+        stock_line = f"{on_sale}{parked}"
+    elif product.manual_stock is not None:
         # Both numbers, always: the difference between them is exactly the set of sales that will
         # arrive as manual fulfilment, and that is not something to make an admin work out.
         stock_line = f"{product.manual_stock} on sale (set by hand) · {credentials} credential(s) loaded"
-    elif product.fulfillment_mode is FulfillmentMode.MANUAL:
-        stock_line = "Fulfilled by hand — no stock pool"
     else:
         stock_line = str(view.available_stock)
     text = (
@@ -311,13 +329,15 @@ async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, I
         f"Price: {format_minor(product.price_minor, product.currency)}\n"
         f"Category: {category}\n"
         f"Stock: {stock_line}\n"
-        f"Fulfillment: {product.fulfillment_mode.value}\n"
+        # Same wording as the button below it — two descriptions of one thing is how a screen
+        # starts contradicting itself.
+        f"Fulfillment: {_fulfillment_label(product, credentials).split(': ')[-1]}\n"
         f"Warranty: {product.warranty_days} days\n"
         f"Description: {product.description or '—'}\n"
         f"Delivery info: {product.delivery_info or '—'}\n"
         f"{PAD}"
     )
-    return text, _detail_keyboard(product)
+    return text, _detail_keyboard(product, credentials)
 
 
 @router.callback_query(AdminProductCB.filter(F.action == "list"))
@@ -1119,12 +1139,17 @@ async def prompt_edit_field(query: CallbackQuery, state: FSMContext, session: As
         product = await ProductRepo(session).get_by_id(int(product_id))
         is_auto = product is not None and product.fulfillment_mode is FulfillmentMode.AUTO
         current = "⚡ Auto" if is_auto else "🙋 Manual"
+        credentials = (
+            await ProductRepo(session).available_stock_count(product.id) if product else 0
+        )
         await query.message.edit_text(
             "✏️ <b>Fulfillment mode</b>\n\n"
-            f"Currently: <b>{current}</b>\n\n"
-            "⚡ <b>Auto</b> — a stock item is sent the moment payment clears.\n"
-            "🙋 <b>Manual</b> — the order lands in your queue and you fulfil it. Your stock pool "
-            "is left untouched; you send the content yourself.",
+            f"Currently: <b>{current}</b> · <b>{credentials}</b> credential(s) loaded\n\n"
+            "⚡ <b>Auto</b> — a stock item is sent the moment payment clears. Switching to Auto "
+            f"resets the stock count to the credentials you have loaded (<b>{credentials}</b>).\n"
+            "🙋 <b>Manual</b> — the order lands in your queue and you fulfil it yourself. Your "
+            "credentials are frozen: nothing is delivered from the pool and nothing is consumed, "
+            "whatever you set the stock count to.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -1234,6 +1259,13 @@ async def apply_edit_button(query: CallbackQuery, session: AsyncSession) -> None
 
     if code == "md":
         product.fulfillment_mode = FulfillmentMode.AUTO if value == "auto" else FulfillmentMode.MANUAL
+        if value == "auto":
+            # Going back to Auto hands counting back to the credential pool. Keeping the old
+            # hand-set number would be the worse surprise of the two: it was typed for a product
+            # that wasn't delivering credentials, and it would now cap or overshoot a shelf it was
+            # never about. The pool itself was frozen while MANUAL was on, so this lands on exactly
+            # the number of keys that are actually loaded.
+            product.manual_stock = None
     elif code == "wr":
         product.warranty_days = int(value)
     elif code == "ct":

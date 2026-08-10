@@ -26,7 +26,7 @@ def _price(product: Product) -> str:
 
 
 def _stock_line(product: Product, available: int) -> str:
-    if product.fulfillment_mode == FulfillmentMode.MANUAL:
+    if product.fulfillment_mode == FulfillmentMode.MANUAL and product.manual_stock is None:
         return "📦 Made to order\n"
     return f"📦 <b>{available} available</b>\n"
 
@@ -118,7 +118,9 @@ async def maybe_announce_sold_out(bot: Bot, session: AsyncSession, product_id: i
         return False
     if product.status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED, ProductStatus.OUT_OF_STOCK):
         return False
-    if product.fulfillment_mode == FulfillmentMode.MANUAL:
+    # A MANUAL product normally never sells out — there is no pool to exhaust. A hand-set count is
+    # the exception: it can reach zero, and that is a real sell-out worth announcing.
+    if product.fulfillment_mode == FulfillmentMode.MANUAL and product.manual_stock is None:
         return False
 
     view = await compute_display_status(session, product)
