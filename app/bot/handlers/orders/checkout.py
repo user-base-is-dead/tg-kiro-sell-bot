@@ -14,7 +14,7 @@ from app.database.models.user import User
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import t
-from app.services import order_service, stock_hold_service
+from app.services import announcement_service, order_service, stock_hold_service
 from app.services.catalog_service import compute_display_status
 from app.utils.errors import UserError
 from app.utils.money import format_minor
@@ -274,6 +274,12 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
     note = await delivery_note(session, placed.order_item.product_id, user.locale)
     if note:
         lines.append(note)
+
+    # After the buyer has been served, never before: if this purchase emptied the shelf, everyone
+    # else hears about it. No admin approval — the event already happened.
+    await announcement_service.maybe_announce_sold_out(
+        query.bot, session, placed.order_item.product_id
+    )
 
     await query.message.edit_text("\n\n".join(lines))
     await query.answer()

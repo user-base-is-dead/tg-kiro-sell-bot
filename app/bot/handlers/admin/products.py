@@ -12,7 +12,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,9 +28,16 @@ from app.bot.states.product_form import (
     StockUploadForm,
 )
 from app.core.config import get_settings
-from app.database.models.catalog import Category, FulfillmentMode, Product
+from app.database.models.catalog import (
+    Category,
+    FulfillmentMode,
+    Product,
+    ProductStatus,
+    StockItem,
+)
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
+from app.services.announcement_service import announce_new_product, announce_restock
 from app.services.catalog_service import add_stock, compute_display_status, create_product
 from app.services.product_import import MAX_BYTES, MAX_ROWS, apply_rows, parse_csv, to_csv
 from app.utils.money import format_minor, parse_to_minor
@@ -597,6 +604,11 @@ async def _finish_product(
     body = f"✅ Product <b>{data['name']}</b> created (id {product_id}).\n{tail}\n\n{text}"
     await (message.edit_text if edit else message.answer)(body, reply_markup=markup)
 
+    # Asked, never assumed: a brand-new product is often created half-finished (no stock yet, price
+    # still to check), and a product announcement is the one message every user gets.
+    prompt, prompt_markup = _announce_prompt("new", product_id, data["name"])
+    await message.answer(prompt, reply_markup=prompt_markup)
+
 @router.message(Command("cancel"), ProductForm.name)
 @router.message(Command("cancel"), ProductForm.description)
 @router.message(Command("cancel"), ProductForm.price)
@@ -752,6 +764,17 @@ async def receive_stock(message: Message, state: FSMContext, session: AsyncSessi
 
     data = await state.get_data()
     product_id = data["product_id"]
+    # Read the latch *before* add_stock clears it: that column is the only record that this product
+    # had sold out, and it is what tells a restock apart from topping up a shelf that never emptied.
+    before = await ProductRepo(session).get_by_id(product_id)
+    # A product that has never held a single item isn't coming *back* — this is its first stocking,
+    # and it was already offered as a new-product announcement when it was created.
+    ever_stocked = await session.scalar(
+        select(func.count()).select_from(StockItem).where(StockItem.product_id == product_id)
+    )
+    was_sold_out = (
+        before is not None and before.status is ProductStatus.OUT_OF_STOCK and bool(ever_stocked)
+    )
     try:
         count = await add_stock(
             session,
@@ -771,6 +794,70 @@ async def receive_stock(message: Message, state: FSMContext, session: AsyncSessi
         session, product_id, note=f"✅ Added <b>{count}</b> item(s).\n"
     )
     await message.answer(text, reply_markup=markup)
+
+    # Only on the batch that actually ends the drought — the loop stays open afterwards, so asking
+    # again on every further batch would nag the admin for one restock.
+    if was_sold_out and before is not None:
+        prompt, prompt_markup = _announce_prompt("restock", product_id, before.name)
+        await message.answer(prompt, reply_markup=prompt_markup)
+
+
+# ---- Announcements ----
+#
+# Two of the three announcement kinds are opt-in, and both ask here. The third — a sell-out — never
+# reaches this screen: it fires by itself from the checkout path (announcement_service
+# .maybe_announce_sold_out), because the admin isn't present when a buyer takes the last item.
+
+_ANNOUNCE_HEADLINE = {
+    "new": "🆕 Announce this as a <b>new product</b>?",
+    "restock": "🔄 Announce this as <b>back in stock</b>?",
+}
+
+
+def _announce_prompt(kind: str, product_id: int, name: str) -> tuple[str, InlineKeyboardMarkup]:
+    return (
+        f"{_ANNOUNCE_HEADLINE[kind]}\n\n"
+        f"<b>{name}</b>\n\n"
+        "Announce sends it to <b>every user</b> as a broadcast. Decline changes nothing — the "
+        "product stays exactly as it is, just unannounced.",
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    btn("📢 Announce", f"pann:{kind}:{product_id}", SUCCESS),
+                    btn("🚫 Decline", "panndecl", DANGER),
+                ]
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("pann:"))
+async def send_product_announcement(query: CallbackQuery, session: AsyncSession, user) -> None:
+    _, kind, raw_id = query.data.split(":", 2)
+    product = await ProductRepo(session).get_by_id(int(raw_id))
+    if product is None:
+        await query.answer("That product is gone.", show_alert=True)
+        return
+
+    targets = await (
+        announce_new_product if kind == "new" else announce_restock
+    )(query.message.bot, session, product, user.telegram_id)
+
+    await query.message.edit_text(
+        f"📢 Announcing <b>{product.name}</b> to {targets} user(s)…",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [btn("🔙 Back", AdminProductCB(action="view", id=str(product.id)).pack(), PRIMARY)]
+            ]
+        ),
+    )
+    await query.answer()
+
+
+@router.callback_query(F.data == "panndecl")
+async def decline_product_announcement(query: CallbackQuery) -> None:
+    await query.message.edit_text("🚫 Not announced.")
+    await query.answer()
 
 
 # ---- Search ----

@@ -13,7 +13,7 @@ from app.database.models.user import User
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.locales.i18n import t
-from app.services.catalog_service import compute_display_status
+from app.services.catalog_service import compute_display_status, stock_label
 from app.services import stock_hold_service
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI, STATUS_LABEL
@@ -54,6 +54,7 @@ async def render_product_list(
         lines = "\n".join(
             f"{STATUS_EMOJI[v.display_status]} {v.product.name} — "
             f"{v.product.price_minor / 100:.2f} {v.product.currency}"
+            + (f" · <b>{left}</b>" if (left := stock_label(v)) else "")
             for v in views
         )
         text = f"{emoji} <b>{category.name.upper()}</b>\n\n{lines}"
@@ -88,7 +89,12 @@ async def render_product_detail(session: AsyncSession, product_id: int, locale: 
             "automatically — check back shortly. If it completes, this product is sold out."
         )
 
-    stock_line = "" if product.fulfillment_mode.value == "MANUAL" else f"📦 Stock: {view.available_stock}\n"
+    # MANUAL products are fulfilled by hand, so there is no pool to count — saying "made to order"
+    # is the honest version of the same line rather than printing a zero that isn't one.
+    if product.fulfillment_mode.value == "MANUAL":
+        stock_line = "📦 Stock: Made to order\n"
+    else:
+        stock_line = f"📦 Stock: <b>{view.available_stock} remaining</b>\n"
     text = (
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🛍️ <b>{product.name.upper()}</b>\n"

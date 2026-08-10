@@ -7,7 +7,7 @@ from app.bot.keyboards.common import with_nav
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.database.models.catalog import Category, Product, ProductStatus
 from app.locales.i18n import t
-from app.services.catalog_service import ProductView
+from app.services.catalog_service import ProductView, stock_label
 from app.utils.money import format_minor
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI
@@ -18,6 +18,9 @@ from app.utils.status_emoji import STATUS_EMOJI
 _STATUS_STYLE: dict[ProductStatus, str | None] = {
     ProductStatus.IN_STOCK: SUCCESS,
     ProductStatus.LOW_STOCK: PRIMARY,
+    # ON_HOLD is a temporary sold-out, so it borrows the same red rather than being absent from the
+    # table — a missing key here is a KeyError on a page a shopper is looking at.
+    ProductStatus.ON_HOLD: DANGER,
     ProductStatus.OUT_OF_STOCK: DANGER,
     ProductStatus.COMING_SOON: PRIMARY,
     ProductStatus.DISABLED: NEUTRAL,
@@ -43,12 +46,12 @@ def category_grid(categories: list[Category], locale: str, *, loose: list[Produc
         rows.append([btn("─────────────", "noop", NEUTRAL)])
 
     row: list[InlineKeyboardButton] = []
-    # Alternating blue/green down the grid — the categories carry no state that would justify one
-    # color over another, so the split is purely so adjacent tiles stay distinguishable.
-    for i, cat in enumerate(categories):
+    # Every category is blue. Green is reserved for state that means "available"/"go ahead" further
+    # in (a stocked product, Buy Now), so spending it on folders — which carry no state at all —
+    # made the two levels look like they were saying the same thing.
+    for cat in categories:
         label = f"{cat.emoji or '📦'} {cat.name}"
-        style = SUCCESS if i % 2 == 0 else PRIMARY
-        row.append(btn(label, CategoryCB(action="open", id=str(cat.id)).pack(), style))
+        row.append(btn(label, CategoryCB(action="open", id=str(cat.id)).pack(), PRIMARY))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -65,6 +68,10 @@ def product_list(views: list[ProductView], category_id: int, page: Page, locale:
         p = view.product
         emoji = STATUS_EMOJI[view.display_status]
         label = f"{emoji} {p.name} — {format_minor(p.price_minor, p.currency)}"
+        # The count rides on the button itself so a shopper sees scarcity before tapping in.
+        left = stock_label(view)
+        if left:
+            label += f" · {left}"
         rows.append(
             [btn(label, ProductCB(action="view", id=str(p.id)).pack(), _STATUS_STYLE[view.display_status])]
         )

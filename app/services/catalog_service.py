@@ -55,6 +55,21 @@ async def compute_display_status(session: AsyncSession, product: Product) -> Pro
     return ProductView(product, 0, status)
 
 
+def stock_label(view: ProductView) -> str:
+    """How many are left, in the shopper's words — "" when the number would be meaningless.
+
+    MANUAL products have no pool to count, and a COMING_SOON/DISABLED one is not for sale, so both
+    would only be advertising a zero that means nothing.
+    """
+    if view.product.fulfillment_mode == FulfillmentMode.MANUAL:
+        return ""
+    if view.display_status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        return ""
+    if view.available_stock <= 0:
+        return "0 left"
+    return f"{view.available_stock} left"
+
+
 async def create_category(
     session: AsyncSession,
     *,
