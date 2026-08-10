@@ -17,12 +17,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    columns = [c["name"] for c in inspector.get_columns("broadcasts")]
-    if "parts_json" not in columns:
-        with op.batch_alter_table("broadcasts") as batch_op:
-            batch_op.add_column(sa.Column("parts_json", sa.Text(), nullable=True))
+    with op.batch_alter_table("broadcasts") as batch_op:
+        batch_op.add_column(sa.Column("parts_json", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:

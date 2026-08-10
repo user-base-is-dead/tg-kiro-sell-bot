@@ -24,13 +24,8 @@ fi
 
 # 4. Build and start containers with Docker Compose
 echo "🐳 Building and starting services (PostgreSQL, Redis, Bot)..."
-DOCKER_CMD="docker"
-if ! docker info &> /dev/null; then
-    DOCKER_CMD="sudo docker"
-fi
-
-$DOCKER_CMD compose down || true
-$DOCKER_CMD compose up --build -d
+docker compose down || true
+docker compose up --build -d
 
 echo "✅ Bot successfully deployed and running in background!"
-echo "📋 To check logs, run: $DOCKER_CMD compose logs -f bot"
+echo "📋 To check logs, run: docker compose logs -f bot"

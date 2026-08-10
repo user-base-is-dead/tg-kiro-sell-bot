@@ -17,34 +17,31 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    gift_cols = [c["name"] for c in inspector.get_columns("gift_codes")]
     with op.batch_alter_table("gift_codes") as batch_op:
-        if "kind" not in gift_cols:
-            batch_op.add_column(
-                sa.Column(
-                    "kind",
-                    sa.Enum("CREDIT", "PRODUCT", name="gift_kind"),
-                    nullable=False,
-                    server_default="CREDIT",
-                )
+        batch_op.add_column(
+            sa.Column(
+                "kind",
+                sa.Enum("CREDIT", "PRODUCT", name="gift_kind"),
+                nullable=False,
+                server_default="CREDIT",
             )
-        if "product_id" not in gift_cols:
-            batch_op.add_column(sa.Column("product_id", sa.BigInteger(), nullable=True))
-            batch_op.create_foreign_key(
-                "fk_gift_codes_product_id", "products", ["product_id"], ["id"]
-            )
+        )
+        batch_op.add_column(sa.Column("product_id", sa.BigInteger(), nullable=True))
+        # Every code that exists today is a credit code, so the backfill is the server_default
+        # above. value_minor only becomes optional now that PRODUCT codes leave it empty.
         batch_op.alter_column("value_minor", existing_type=sa.Integer(), nullable=True)
+        batch_op.create_foreign_key(
+            "fk_gift_codes_product_id", "products", ["product_id"], ["id"]
+        )
 
-    redemption_cols = [c["name"] for c in inspector.get_columns("gift_redemptions")]
     with op.batch_alter_table("gift_redemptions") as batch_op:
-        if "order_id" not in redemption_cols:
-            batch_op.add_column(sa.Column("order_id", sa.Uuid(as_uuid=False), nullable=True))
-            batch_op.create_foreign_key(
-                "fk_gift_redemptions_order_id", "orders", ["order_id"], ["id"]
-            )
+        # A product claim moves no money, so it records the order it created instead. Both columns
+        # become optional because exactly one applies per redemption.
+        batch_op.add_column(sa.Column("order_id", sa.Uuid(as_uuid=False), nullable=True))
         batch_op.alter_column("wallet_transaction_id", existing_type=sa.BigInteger(), nullable=True)
+        batch_op.create_foreign_key(
+            "fk_gift_redemptions_order_id", "orders", ["order_id"], ["id"]
+        )
 
 
 def downgrade() -> None:

@@ -17,12 +17,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    columns = [c["name"] for c in inspector.get_columns("gift_codes")]
-    if "description" not in columns:
-        with op.batch_alter_table("gift_codes") as batch_op:
-            batch_op.add_column(sa.Column("description", sa.String(512), nullable=True))
+    with op.batch_alter_table("gift_codes") as batch_op:
+        batch_op.add_column(sa.Column("description", sa.String(512), nullable=True))
 
 
 def downgrade() -> None:
