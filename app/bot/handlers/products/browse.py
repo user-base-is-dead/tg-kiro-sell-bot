@@ -8,12 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import CategoryCB, ProductCB
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.products import category_grid, product_detail, product_list
+from app.database.models.catalog import ProductStatus
 from app.database.models.user import User
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.locales.i18n import t
 from app.services.catalog_service import compute_display_status
-from app.services import order_hold_service
+from app.services import stock_hold_service
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI, STATUS_LABEL
 from app.utils.text import PAD
@@ -70,17 +71,22 @@ async def render_product_detail(session: AsyncSession, product_id: int, locale: 
     if view.display_status.value == "LOW_STOCK":
         status_line += f"\nOnly {view.available_stock} remaining!"
 
-    # Check for product hold
-    hold = await order_hold_service.get_hold_on_product(session, product_id)
+    # Holds are per credential now, so somebody else holding one says nothing about whether this
+    # shopper can buy — the page used to announce "On hold" to everyone the moment any buyer entered
+    # checkout, even with 19 of 20 credentials free. The only holds worth mentioning are this
+    # shopper's own, and the case where the *last* free credential is the one being held.
     hold_line = ""
-    if hold is not None:
-        remaining = (hold.expires_at - __import__('datetime').datetime.now(__import__('datetime').UTC)).total_seconds()
+    if user_id is not None:
+        remaining = await stock_hold_service.seconds_remaining(session, product_id, user_id)
         if remaining > 0:
-            minutes = int(remaining) // 60
-            seconds = int(remaining) % 60
-            hold_line = f"\n⏱️ <b>On hold for {minutes}m {seconds}s</b>"
-            if user_id and hold.user_id == user_id:
-                hold_line = f"\n🔒 <b>Your payment: {minutes}m {seconds}s remaining</b>"
+            hold_line = f"\n🔒 <b>Your payment: {remaining // 60}m {remaining % 60}s remaining</b>"
+
+    if not hold_line and view.display_status is ProductStatus.ON_HOLD:
+        hold_line = (
+            "\n\n⏳ <b>Someone is checking out with the last one.</b>\n"
+            "If their payment isn't completed within 5 minutes it becomes available again "
+            "automatically — check back shortly. If it completes, this product is sold out."
+        )
 
     stock_line = "" if product.fulfillment_mode.value == "MANUAL" else f"📦 Stock: {view.available_stock}\n"
     text = (
@@ -136,7 +142,9 @@ async def on_product(query: CallbackQuery, callback_data: ProductCB, session: As
         await query.answer()
         return
 
-    rendered = await render_product_detail(session, int(callback_data.id), user.locale)
+    # `user_id` is what lets the page tell "your payment window" apart from "someone else has the
+    # last one" — without it every shopper saw the anonymous version.
+    rendered = await render_product_detail(session, int(callback_data.id), user.locale, user_id=user.id)
     if rendered is None:
         await query.answer(t("common.unknown_action", user.locale), show_alert=True)
         return

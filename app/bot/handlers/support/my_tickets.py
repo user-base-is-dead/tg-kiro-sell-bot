@@ -13,6 +13,7 @@ from app.database.models.user import User
 from app.database.repositories.support_repo import SupportRepo
 from app.locales.i18n import t
 from app.utils.pagination import Page
+from app.utils.time import as_utc
 
 router = Router(name="support.my_tickets")
 
@@ -59,9 +60,11 @@ async def _render_tickets(session: AsyncSession, user: User, page_num: int = 1) 
     if nav_rows:
         rows.append(nav_rows)
 
-    title = "📋 <b>MY TICKETS</b>"
+    title = t("support.tickets_title", user.locale)
     if page.total_pages > 1:
-        title = f"📋 <b>MY TICKETS ({page.clamped_page}/{page.total_pages})</b>"
+        # Slotted into the heading rather than appended, so the page counter can't be mistaken for
+        # part of the description underneath it.
+        title = title.replace("<b>MY TICKETS</b>", f"<b>MY TICKETS ({page.clamped_page}/{page.total_pages})</b>", 1)
 
     return title, with_nav(rows, user.locale, back_target="support")
 
@@ -83,6 +86,31 @@ async def tickets_page(query: CallbackQuery, session: AsyncSession, user: User) 
     await query.answer()
 
 
+def render_ticket_card(ticket, messages, locale: str) -> str:
+    """The ticket detail bubble: what it is, when it started, the conversation, and what the
+    customer can do next. The last part matters most — a closed ticket looks identical to an open
+    one otherwise, so people reply into a thread nobody is reading."""
+    is_live = ticket.status.value in ("OPEN", "PENDING")
+
+    lines = [
+        f"{_STATUS_EMOJI.get(ticket.status.value, '•')} <b>{ticket.ticket_number}</b> — {ticket.status.value}",
+        "",
+        t("support.ticket_category", locale, category=escape(ticket.category)),
+        t("support.ticket_opened", locale, opened_at=f"{as_utc(ticket.opened_at):%d %b %Y, %H:%M} UTC"),
+        "",
+        t("support.ticket_conversation", locale),
+    ]
+    for m in messages[-8:]:
+        author = "You" if m.author_type == "USER" else "Support"
+        # Escaped: a message containing "<" would otherwise make Telegram reject the whole card,
+        # and the user would just see their ticket stop opening.
+        lines.append(f"<b>{author}:</b> {escape(m.content or '')}")
+
+    lines.append("")
+    lines.append(t("support.ticket_hint_open" if is_live else "support.ticket_hint_closed", locale))
+    return "\n".join(lines)
+
+
 @router.callback_query(SupportCB.filter(F.action == "view"))
 async def view_ticket(query: CallbackQuery, callback_data: SupportCB, session: AsyncSession, user: User) -> None:
     repo = SupportRepo(session)
@@ -92,17 +120,9 @@ async def view_ticket(query: CallbackQuery, callback_data: SupportCB, session: A
         return
 
     messages = await repo.list_messages(ticket.id, limit=10)
-    lines = [f"🎫 <b>{ticket.ticket_number}</b> — {ticket.status.value}\n"]
-    for m in messages[-8:]:
-        author = "You" if m.author_type == "USER" else "Support"
-        # Escaped: a message containing "<" would otherwise make Telegram reject the whole card,
-        # and the user would just see their ticket stop opening.
-        lines.append(f"<b>{author}:</b> {escape(m.content)}")
-    if ticket.status.value in ("OPEN", "PENDING"):
-        lines.append("\n<i>Reply here to continue the conversation.</i>")
 
     await query.message.edit_text(
-        "\n".join(lines),
+        render_ticket_card(ticket, messages, user.locale),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [btn(t("menu.back", user.locale), SupportCB(action="mytickets").pack(), DANGER)],

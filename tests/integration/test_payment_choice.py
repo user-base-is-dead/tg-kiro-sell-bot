@@ -84,9 +84,10 @@ async def test_an_unavailable_product_has_no_payment_screen(sqlite_sessionmaker)
 
 
 async def test_the_choice_screen_takes_no_hold(sqlite_sessionmaker) -> None:
-    """Choosing *how* to pay must not reserve stock. The hold belongs to the confirm screen, which
-    is five minutes; a crypto transfer can outlast that and would strand a paid buyer."""
-    from app.services import order_hold_service
+    """Merely *showing* the payment options reserves nothing. A credential is committed when a
+    method is actually picked — a shopper who opens this screen and wanders off has taken nothing
+    off the shelf."""
+    from app.services import stock_hold_service
 
     user_id = await _make_user(sqlite_sessionmaker, 4004)
     async with sqlite_sessionmaker() as session:
@@ -96,4 +97,4 @@ async def test_the_choice_screen_takes_no_hold(sqlite_sessionmaker) -> None:
     async with sqlite_sessionmaker() as session:
         user = await UserRepo(session).get_by_id(user_id)
         await render_payment_choice(session, product_id, user)
-        assert await order_hold_service.get_hold_on_product(session, product_id) is None
+        assert await stock_hold_service.held_count(session, product_id) == 0

@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminMiscCB, AdminUserCB
-from app.bot.filters.is_admin import IsAdmin
+from app.bot.filters.is_admin import IsAdmin, is_admin_user
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.bot.states.user_search_form import UserBalanceForm, UserSearchForm
@@ -133,29 +133,43 @@ async def list_users(query: CallbackQuery, callback_data: AdminUserCB, session: 
     await query.message.edit_text(text, reply_markup=markup)
     await query.answer()
 
-def _detail_keyboard(target, page: int) -> InlineKeyboardMarkup:
+def _detail_keyboard(target, page: int, *, target_is_admin: bool = False) -> InlineKeyboardMarkup:
     banned = target.status == UserStatus.BANNED
     toggle = ("✅ Unban", "unban") if banned else ("🚫 Ban", "ban")
+    # An admin cannot be banned, so the button says so instead of offering an action that will be
+    # refused. Unban stays live for them: a stale BANNED flag from before admins were immune should
+    # still be clearable.
+    ban_row = (
+        [btn("🛡️ Admin — cannot be banned", "noop", NEUTRAL)]
+        if target_is_admin and not banned
+        else [
+            btn(
+                toggle[0],
+                AdminUserCB(action=toggle[1], id=str(target.id), page=page).pack(),
+                SUCCESS if banned else DANGER,
+            )
+        ]
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                # Just "Wallet": this is the only place a balance can move, because users have no
+                # self-service withdrawal — they ask support and an admin does it here by hand. The
+                # old "Credit / Debit" label read like a payment card rather than the accounting
+                # sense of the words.
                 btn(
-                    "💳 Credit / Debit wallet",
+                    "💰 Wallet",
                     AdminUserCB(action="credit", id=str(target.id), page=page).pack(),
                     SUCCESS,
                 )
             ],
-            [
-                btn(
-                    toggle[0],
-                    AdminUserCB(action=toggle[1], id=str(target.id), page=page).pack(),
-                    SUCCESS if banned else DANGER,
-                )
-            ],
-            # Back returns to the page they came from, not to page 1 — losing your place after
-            # every profile is what makes a 45-page list unusable.
+            ban_row,
+            # One Back, not two. This used to carry "🔙 Back to list" *and* a plain "🔙 Back" to the
+            # admin panel — two red buttons with the same word on them, where the second skipped
+            # past the list the admin had just been navigating. Back to list returns to the page
+            # they came from, not to page 1: losing your place after every profile is what makes a
+            # 45-page list unusable.
             [btn("🔙 Back to list", AdminUserCB(action="list", page=page).pack(), DANGER)],
-            nav_row("en", back_target="admin_panel", home=False),
         ]
     )
 
@@ -215,7 +229,9 @@ async def view_user(query: CallbackQuery, callback_data: AdminUserCB, session: A
         return
     await query.message.edit_text(
         await _render_detail(session, target),
-        reply_markup=_detail_keyboard(target, callback_data.page),
+        reply_markup=_detail_keyboard(
+            target, callback_data.page, target_is_admin=await is_admin_user(session, target.telegram_id)
+        ),
     )
     await query.answer()
 
@@ -224,6 +240,14 @@ async def toggle_ban(query: CallbackQuery, callback_data: AdminUserCB, session: 
     target = await UserRepo(session).get_by_id(int(callback_data.id))
     if target is None:
         await query.answer("Not found.", show_alert=True)
+        return
+
+    # Admins are immune. Banning one is never a legitimate moderation action and always an accident
+    # or an attack — one admin could lock out the owner, or lock themselves out of the panel they
+    # would need to undo it. `BanCheckMiddleware` ignores the flag for admins anyway, so setting it
+    # here would only produce a BANNED-looking profile that behaves as active: worse than refusing.
+    if callback_data.action == "ban" and await is_admin_user(session, target.telegram_id):
+        await query.answer("Admins cannot be banned.", show_alert=True)
         return
 
     target.status = UserStatus.BANNED if callback_data.action == "ban" else UserStatus.ACTIVE
@@ -238,7 +262,9 @@ async def toggle_ban(query: CallbackQuery, callback_data: AdminUserCB, session: 
     await query.answer("Done.")
     await query.message.edit_text(
         await _render_detail(session, target),
-        reply_markup=_detail_keyboard(target, callback_data.page),
+        reply_markup=_detail_keyboard(
+            target, callback_data.page, target_is_admin=await is_admin_user(session, target.telegram_id)
+        ),
     )
 
 
@@ -258,11 +284,11 @@ async def prompt_credit(query: CallbackQuery, callback_data: AdminUserCB, state:
     await state.set_state(UserBalanceForm.amount)
     await state.update_data(target_id=target.id, page=callback_data.page)
     await query.message.edit_text(
-        f"💳 <b>Adjust wallet</b>\n\n"
+        f"💰 <b>Wallet</b>\n\n"
         f"{_handle(target)} · <code>{target.telegram_id}</code>\n"
         f"Current balance: <b>{format_minor(wallet.balance_minor, wallet.currency)}</b>\n\n"
         "Send the amount to move, signed:\n"
-        "<code>+10</code> credits 10 · <code>-2.50</code> debits 2.50\n\n"
+        "<code>+10</code> adds 10 · <code>-2.50</code> takes away 2.50\n\n"
         "Add a reason after it if you want one recorded in the audit log:\n"
         "<code>+10 goodwill for the delayed order</code>\n\n"
         "A debit cannot take the balance below zero.",
@@ -345,7 +371,9 @@ async def apply_credit(message: Message, state: FSMContext, session: AsyncSessio
         f"{'to' if amount_minor > 0 else 'from'} {_handle(target)}.\n"
         f"New balance: <b>{format_minor(txn.balance_after_minor, currency)}</b>\n\n"
         + await _render_detail(session, target),
-        reply_markup=_detail_keyboard(target, data.get("page", 1)),
+        reply_markup=_detail_keyboard(
+            target, data.get("page", 1), target_is_admin=await is_admin_user(session, target.telegram_id)
+        ),
     )
 
 
@@ -396,7 +424,10 @@ async def do_search(message: Message, state: FSMContext, session: AsyncSession) 
     if len(results) == 1:
         target = results[0]
         await message.answer(
-            await _render_detail(session, target), reply_markup=_detail_keyboard(target, 1)
+            await _render_detail(session, target),
+            reply_markup=_detail_keyboard(
+                target, 1, target_is_admin=await is_admin_user(session, target.telegram_id)
+            ),
         )
         return
 

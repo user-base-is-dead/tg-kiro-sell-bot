@@ -44,7 +44,6 @@ from app.bot.handlers.admin.warranty_claims import router as admin_warranty_clai
 from app.bot.middlewares.ban_check import BanCheckMiddleware
 from app.bot.middlewares.db_session import DbSessionMiddleware
 from app.bot.middlewares.error import ErrorMiddleware
-from app.bot.middlewares.support_exit_notice import SupportExitNoticeMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.bot.middlewares.user import UserMiddleware
 from app.core.config import get_settings
@@ -131,10 +130,6 @@ async def main() -> None:
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
     dp.update.middleware(UserMiddleware(default_locale=settings.default_locale))
     dp.update.middleware(BanCheckMiddleware())
-
-    # Inner, not outer, and on `message` rather than `update`: it has to read data["handler"],
-    # which only exists once aiogram has resolved which handler matched.
-    dp.message.middleware(SupportExitNoticeMiddleware())
 
     _include_routers(dp)
 

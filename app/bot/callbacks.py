@@ -37,7 +37,8 @@ class AdminCategoryCB(CallbackData, prefix="acat"):
 
 
 class AdminProductCB(CallbackData, prefix="aprod"):
-    action: str  # "list" | "add" | "edit" | "delete" | "toggle" | "view" | "stock"
+    # "delete" only asks for confirmation; "delete_ok" is the one that actually removes the row.
+    action: str  # "list" | "add" | "edit" | "delete" | "delete_ok" | "toggle" | "view" | "stock"
     id: str = ""
     page: int = 1
 
@@ -61,7 +62,8 @@ class AdminPaymentCB(CallbackData, prefix="apay"):
 
 
 class AdminGiftCB(CallbackData, prefix="agift"):
-    action: str  # "list" | "add" | "view" | "disable"
+    # "delete" only asks; "delete_ok" is the one that removes the row.
+    action: str  # "list" | "add" | "view" | "toggle" | "additems" | "delete" | "delete_ok"
     id: str = ""
 
 

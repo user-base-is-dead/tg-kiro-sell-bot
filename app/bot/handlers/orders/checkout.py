@@ -4,15 +4,16 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import OrderCB
-from app.bot.keyboards.common import confirm_row, nav_row
+from app.bot.callbacks import NavCB, OrderCB
+from app.bot.delivery_notes import delivery_note
+from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.products import category_back_target
-from app.bot.keyboards.styles import NEUTRAL, PRIMARY, SUCCESS, btn
+from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.database.models.user import User
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import t
-from app.services import order_service, order_hold_service
+from app.services import order_service, stock_hold_service
 from app.services.catalog_service import compute_display_status
 from app.utils.errors import UserError
 from app.utils.money import format_minor
@@ -89,9 +90,14 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
 
     wallet = await WalletRepo(session).get_or_create(user.id, currency=product.currency)
 
-    # Create 5-minute hold on product
-    hold = await order_hold_service.create_hold(session, product.id, user.id)
-    remaining = await order_hold_service.get_time_remaining(session, product.id, user.id)
+    # Reserve ONE credential for this buyer — not the product. The other credentials stay on the
+    # shelf and other buyers can check out against them at the same time. `hold_one` is re-entrant,
+    # so coming back to this screen refreshes the same credential instead of taking a second.
+    held = await stock_hold_service.hold_one(session, product.id, user.id)
+    if held is None:
+        # Everything free was taken between rendering the payment chooser and getting here.
+        return None
+    remaining = await stock_hold_service.seconds_remaining(session, product.id, user.id)
     minutes = remaining // 60
     seconds = remaining % 60
 
@@ -106,13 +112,26 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
         + f"\n\n⏱️ <b>Payment expires in:</b> {minutes}m {seconds}s"
         + f"\n{PAD}"
     )
+    # One exit, not two. This screen used to carry ❌ Cancel *and* 🔙 Back, which looked like a
+    # choice but wasn't: both left the screen, and neither released the 5-minute hold taken above —
+    # so backing out locked the item away from every other buyer until the hold expired. Back is now
+    # the single way out and it does the cancelling, exactly like the crypto invoice's exit row.
     rows = [
-        confirm_row(
-            user.locale,
-            OrderCB(action="confirm", product_id=str(product.id)).pack(),
-            OrderCB(action="cancel", product_id=str(product.id)).pack(),
-        ),
-        nav_row(user.locale, back_target=category_back_target(product.category_id)),
+        [
+            btn(
+                t("menu.confirm", user.locale),
+                OrderCB(action="confirm", product_id=str(product.id)).pack(),
+                SUCCESS,
+            )
+        ],
+        [
+            btn(
+                t("menu.back", user.locale),
+                OrderCB(action="cancel", product_id=str(product.id)).pack(),
+                DANGER,
+            ),
+            btn(t("menu.home", user.locale), NavCB(target="home").pack(), PRIMARY),
+        ],
     ]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -134,12 +153,17 @@ async def on_pay_from_wallet(query: CallbackQuery, callback_data: OrderCB, sessi
 
 @router.callback_query(OrderCB.filter(F.action == "crypto"))
 async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, session: AsyncSession, user: User) -> None:
-    """Crypto route: open a top-up invoice for the shortfall.
+    """Crypto route: reserve the credential, then open a top-up invoice for the shortfall.
 
-    No hold is taken here. A crypto transfer can take minutes and the hold is five, so holding
-    stock across it would expire mid-payment and fail the purchase after the buyer had already
-    sent funds. The money lands in the wallet either way, so nothing is lost if the item sells
-    out first — the buyer keeps the balance and can spend it on anything.
+    Picking a payment method is what starts the reservation, and crypto is a payment method — so a
+    credential is held here exactly as it is on the wallet route. Only that one credential is held;
+    the rest of the pool stays buyable by everyone else.
+
+    The hold still lasts five minutes while a transfer can take longer. That is deliberate: the
+    money lands in the wallet either way, so a buyer whose hold lapses keeps the balance and can
+    spend it on anything, including re-buying this product if a credential is free. Holding stock
+    open-endedly against an unconfirmed chain transfer would take it from buyers who are ready to
+    pay now.
     """
     if not query.message:
         return
@@ -158,6 +182,11 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
         await query.answer(t("orders.wallet_already_covers", user.locale), show_alert=True)
         return
 
+    held = await stock_hold_service.hold_one(session, product.id, user.id)
+    if held is None:
+        await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
+        return
+
     text, markup = await render_payment_details(
         session, user.id, shortfall_minor / 100, user.locale
     )
@@ -170,12 +199,21 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
 
 @router.callback_query(OrderCB.filter(F.action == "cancel"))
 async def on_checkout_cancel(query: CallbackQuery, callback_data: OrderCB, session: AsyncSession, user: User) -> None:
+    """The confirm screen's `🔙 Back` — it hands the held credential straight back.
+
+    Cancelling is explicit information: the buyer is not coming back, so the credential returns to
+    the pool now rather than sitting out the rest of its five minutes. With one credential left,
+    that is the difference between the next shopper buying immediately and being told to wait.
+    """
     if not query.message:
         return
 
     from app.bot.handlers.products.browse import render_product_detail
 
-    rendered = await render_product_detail(session, int(callback_data.product_id), user.locale)
+    product_id = int(callback_data.product_id)
+    await stock_hold_service.release(session, product_id, user.id)
+
+    rendered = await render_product_detail(session, product_id, user.locale, user_id=user.id)
     if rendered:
         text, markup = rendered
         await query.message.edit_text(text, reply_markup=markup)
@@ -204,6 +242,12 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
         )
     else:
         lines.append(t("orders.manual_pending", user.locale))
+
+    # Both routes get the how-to-use-it note: an AUTO buyer needs it alongside the key they just
+    # got, and a MANUAL buyer needs to know what is coming before it arrives.
+    note = await delivery_note(session, placed.order_item.product_id, user.locale)
+    if note:
+        lines.append(note)
 
     await query.message.edit_text("\n\n".join(lines))
     await query.answer()

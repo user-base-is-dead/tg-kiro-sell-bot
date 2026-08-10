@@ -8,13 +8,25 @@ from app.database.repositories.product_repo import ProductRepo
 from app.services.catalog_service import create_product
 
 
-def test_detail_screen_offers_edit() -> None:
-    """The detail screen had Add Stock / Toggle / Delete / Back and no Edit at all — a price could
-    not be changed without deleting and recreating the product."""
+def test_detail_screen_edits_every_field_in_one_tap() -> None:
+    """The detail screen once had no Edit at all (a price could not be changed without deleting and
+    recreating the product), then gained an `✏️ Edit` button that only opened a second screen asking
+    which field. Both are gone: every field is reachable directly from the product."""
     product = SimpleNamespace(id=7, is_active=True)
     targets = [b.callback_data for row in _detail_keyboard(product).inline_keyboard for b in row]
 
-    assert any(t.startswith("aprod:edit") for t in targets)
+    for code in _EDIT_FIELDS:
+        assert f"pedit:{code}:7" in targets, f"{_EDIT_FIELDS[code]} is not one tap from the product"
+    assert not any(t.startswith("aprod:edit") for t in targets), "the field picker screen is gone"
+
+
+def test_delete_asks_before_it_deletes() -> None:
+    """Delete is the only irreversible button on the screen, so it goes through a confirmation."""
+    product = SimpleNamespace(id=7, is_active=True)
+    targets = [b.callback_data for row in _detail_keyboard(product).inline_keyboard for b in row]
+
+    assert "aprod:delete:7:1" in targets
+    assert "aprod:delete_ok:7:1" not in targets, "the destructive callback must not be one tap"
 
 
 def test_every_edit_callback_fits_telegram_limit() -> None:

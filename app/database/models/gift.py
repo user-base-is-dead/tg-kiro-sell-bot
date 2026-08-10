@@ -18,16 +18,23 @@ class GiftStatus(str, enum.Enum):
 
 class GiftKind(str, enum.Enum):
     CREDIT = "CREDIT"
-    PRODUCT = "PRODUCT"
+    # The gift carries its own items, pasted when the code is created. There used to be a PRODUCT
+    # kind that handed out a catalog product and consumed its stock; a giveaway is not a sale, and
+    # tying the two meant a promo could quietly empty the shelf a paying customer was queueing for.
+    # Gift stock is now entirely separate — see `GiftItem`.
+    ITEM = "ITEM"
 
 
 class GiftCode(BigIntPKMixin, TimestampMixin, Base):
-    """A code that grants exactly one thing: wallet credit *or* a product.
+    """A code that grants exactly one thing: wallet credit *or* its own attached items.
 
-    `kind` is the discriminator, and the two payload columns are nullable because only one of them
-    applies at a time — CREDIT fills `value_minor`, PRODUCT fills `product_id`. Nothing enforces
-    that pairing at the DB level (SQLite can't add a CHECK to an existing table without a full
-    rebuild), so `create_gift_code` is the single gate that guarantees it.
+    `kind` is the discriminator. CREDIT fills `value_minor`; ITEM owns rows in `gift_items` and
+    leaves `value_minor` NULL. Nothing enforces that pairing at the DB level (SQLite can't add a
+    CHECK to an existing table without a full rebuild), so `create_gift_code` is the single gate
+    that guarantees it.
+
+    Gift stock never touches the catalog. `stock_items` belongs to products people pay for, and a
+    giveaway must not be able to consume it.
     """
 
     __tablename__ = "gift_codes"
@@ -36,7 +43,6 @@ class GiftCode(BigIntPKMixin, TimestampMixin, Base):
     code_last4: Mapped[str] = mapped_column(String(4))
     kind: Mapped[GiftKind] = mapped_column(Enum(GiftKind, name="gift_kind"), default=GiftKind.CREDIT)
     value_minor: Mapped[int | None] = mapped_column(Integer)
-    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"))
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     max_uses: Mapped[int] = mapped_column(Integer, default=1)
     used_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -52,10 +58,37 @@ class GiftRedemption(BigIntPKMixin, Base):
 
     gift_code_id: Mapped[int] = mapped_column(ForeignKey("gift_codes.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    # Exactly one of these is set, mirroring the code's kind: a CREDIT claim moves money and points
-    # at the transaction, a PRODUCT claim moves stock and points at the order it created.
+    # A CREDIT claim moves money and points at the transaction. An ITEM claim moves nothing but a
+    # gift item, so both stay NULL and `gift_items.claimed_by_user_id` records who got what.
     wallet_transaction_id: Mapped[int | None] = mapped_column(ForeignKey("wallet_transactions.id"))
     order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"))
     redeemed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ux_gift_redemptions_code_user", "gift_code_id", "user_id", unique=True),)
+
+
+class GiftItemStatus(str, enum.Enum):
+    AVAILABLE = "AVAILABLE"
+    DELIVERED = "DELIVERED"
+
+
+class GiftItem(BigIntPKMixin, Base):
+    """One giveaway credential, belonging to one gift code. Never a catalog product.
+
+    The admin pastes these when creating the code, so a giveaway has its own pool with its own
+    count and cannot draw down `stock_items`. Each row goes to at most one claimer: `_grant_item`
+    claims one with a conditional UPDATE, the same way credentials are held, so two people hitting
+    Claim at once cannot be handed the same line.
+    """
+
+    __tablename__ = "gift_items"
+
+    gift_code_id: Mapped[int] = mapped_column(ForeignKey("gift_codes.id"), index=True)
+    payload: Mapped[str] = mapped_column(String(4096))  # encrypted at rest via PayloadCipher
+    status: Mapped[GiftItemStatus] = mapped_column(
+        Enum(GiftItemStatus, name="gift_item_status"), default=GiftItemStatus.AVAILABLE
+    )
+    claimed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_gift_items_code_status", "gift_code_id", "status"),)

@@ -28,17 +28,23 @@ def test_order_list_offers_a_way_back() -> None:
     assert "nav:admin_panel" in _targets(_list_keyboard([]))
 
 
-def test_user_detail_offers_a_way_back() -> None:
+def test_user_detail_offers_exactly_one_way_back() -> None:
+    """It used to carry `🔙 Back to list` *and* a plain `🔙 Back` to the admin panel — two red
+    buttons reading almost the same, where the second skipped past the list being navigated. The
+    list is one tap from the panel, so the panel shortcut cost more than it saved."""
     from types import SimpleNamespace
 
     from app.bot.handlers.admin.users import _detail_keyboard
     from app.database.models.user import UserStatus
 
     target = SimpleNamespace(id=1, status=UserStatus.ACTIVE)
-    targets = _targets(_detail_keyboard(target, page=3))
+    markup = _detail_keyboard(target, page=3)
+    targets = _targets(markup)
 
-    assert "nav:admin_panel" in targets
     assert "auser:list::3" in targets, "Back must return to the page the profile was opened from"
+    assert "nav:admin_panel" not in targets, "the duplicate Back is gone"
+    backs = [b.text for row in markup.inline_keyboard for b in row if "Back" in b.text]
+    assert len(backs) == 1, f"one Back button, got {backs}"
 
 
 async def test_gift_list_offers_a_way_back(monkeypatch) -> None:

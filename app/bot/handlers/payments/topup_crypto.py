@@ -4,14 +4,15 @@ from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.bot.keyboards.common import nav_row
+from app.bot.callbacks import NavCB
 from app.bot.states.topup_form import TopUpForm
 from app.database.models.user import User
 from app.database.models.crypto import CryptoPayment
 from app.locales.i18n import t
 from app.services.payments.blockchain_monitor import BlockchainMonitor
+from app.utils.time import as_utc
 
 router = Router(name="payments.topup_crypto")
 
@@ -89,9 +90,22 @@ async def render_payment_details(
 
     rows = [
         [btn("✓ Check Payment Status", f"check_topup_crypto:{payment.id}", SUCCESS)],
-        nav_row(locale, back_target="topup"),
+        _exit_row(locale, payment.id),
     ]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _exit_row(locale: str, payment_id: int) -> list[InlineKeyboardButton]:
+    """Exit row for a live payment. Cancel replaces the plain Back button: leaving this screen
+    while the invoice is still PENDING would otherwise abandon a record that the checker job keeps
+    matching incoming transfers against for the next 15 minutes. Cancel closes the invoice *and*
+    goes one step back, so it does everything Back did and one thing more."""
+    from app.bot.keyboards.styles import DANGER, PRIMARY, btn
+
+    return [
+        btn(t("menu.cancel", locale), f"cancel_topup_crypto:{payment_id}", DANGER),
+        btn(t("menu.home", locale), NavCB(target="home").pack(), PRIMARY),
+    ]
 
 
 @router.callback_query(F.data.startswith("check_topup_crypto:"))
@@ -108,23 +122,26 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
         return
 
     if payment.status == "PENDING":
-        remaining = (payment.created_at + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES) - datetime.now(UTC)).total_seconds()
+        expires_at = as_utc(payment.created_at) + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
+        remaining = (expires_at - datetime.now(UTC)).total_seconds()
         if remaining > 0:
-            minutes = int(remaining) // 60
-            seconds = int(remaining) % 60
-            topup_amount = float(payment.expected_amount) - SERVICE_FEE
-            text = (
-                f"⏳ <b>Payment Status: Pending</b>\n\n"
-                f"Top-Up: ${topup_amount:.2f}\n"
-                f"Service Fee: ${SERVICE_FEE:.2f}\n"
-                f"Total to Send: ${payment.expected_amount} USDT\n\n"
-                f"⏱️ Time remaining: {minutes}m {seconds}s\n\n"
-                "Waiting for blockchain confirmation..."
+            # Nothing has changed yet, so the screen shouldn't change either — replacing it would
+            # take away the wallet address and amount the user is still in the middle of paying.
+            # A popup reports "not in yet" and leaves the invoice on screen to keep copying from.
+            await query.answer(
+                t(
+                    "topup.not_received",
+                    user.locale,
+                    minutes=int(remaining) // 60,
+                    seconds=int(remaining) % 60,
+                ),
+                show_alert=True,
             )
-        else:
-            payment.status = "EXPIRED"
-            await session.flush()
-            text = "❌ <b>Payment Expired</b>\n\nThe payment window has closed. Please start a new top-up."
+            return
+
+        payment.status = "EXPIRED"
+        await session.flush()
+        text = "❌ <b>Payment Expired</b>\n\nThe payment window has closed. Please start a new top-up."
     elif payment.status == "CONFIRMED":
         topup_amount = float(payment.expected_amount) - SERVICE_FEE
         text = (
@@ -144,12 +161,39 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
     else:
         text = f"❓ <b>Payment Status: {payment.status}</b>"
 
-    from app.bot.callbacks import NavCB
     from app.bot.keyboards.styles import DANGER, btn
 
+    # Only settled payments reach here — a still-live one returns above with a popup. So there is
+    # never anything left to cancel, and plain Back is the honest button.
     rows = [[btn(t("menu.back", user.locale), NavCB(target="topup").pack(), DANGER)]]
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await query.answer()
+
+
+@router.callback_query(F.data.startswith("cancel_topup_crypto:"))
+async def on_cancel_topup_payment(query: CallbackQuery, session: AsyncSession, user: User) -> None:
+    """Close a pending invoice and step back to the top-up screen."""
+    if not query.message:
+        return
+
+    payment_id = int(query.data.split(":")[-1])
+    payment = await session.get(CryptoPayment, payment_id)
+
+    # Ownership is re-derived from the DB, never trusted from the callback payload — the id in it
+    # is just a routing hint anyone could replay.
+    if payment is None or payment.user_id != user.id:
+        await query.answer(t("common.unknown_action", user.locale), show_alert=True)
+        return
+
+    # Only a live invoice changes state. A payment that already confirmed while the user was
+    # looking at the screen must not be cancelled out from under them.
+    if payment.status == "PENDING":
+        payment.status = "CANCELLED"
+        await session.flush()
+
+    text, markup = await render_topup_packages(user.locale)
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer(t("topup.cancelled", user.locale))
 
 
 @router.callback_query(F.data == "topup_crypto_custom")

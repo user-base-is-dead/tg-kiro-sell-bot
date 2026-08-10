@@ -10,11 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import LangCB, NavCB
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.main_menu import (
-    language_inline_keyboard,
-    main_inline_keyboard,
-    main_reply_keyboard,
-)
+from app.bot.keyboards.main_menu import language_inline_keyboard, main_inline_keyboard
+from app.bot.panel import send_reply_panel
 from app.database.models.user import User
 from app.locales.i18n import supported_locales, t
 
@@ -52,11 +49,10 @@ async def set_language(query: CallbackQuery, callback_data: LangCB, session: Asy
     if query.message:
         logger.debug("Language changed to %s, updating keyboards", locale)
         await query.message.edit_text(
-            t("welcome.subtitle", locale), reply_markup=main_inline_keyboard(locale, is_admin=is_admin)
+            t("welcome.subtitle", locale, name=user.first_name or "there"),
+            reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
         )
-        try:
-            reply_kb = main_reply_keyboard(locale, is_admin=is_admin)
-            await query.message.answer(" ", reply_markup=reply_kb)
-            logger.debug("Reply keyboard sent with new language")
-        except Exception as e:
-            logger.error("Failed to send reply keyboard after language change: %s", e, exc_info=True)
+        # The panel's buttons send their own localized label as plain text, so a locale change must
+        # replace them or the `MenuButton` filter stops matching. The new locale is part of the
+        # install key, so this genuinely re-installs rather than hitting the cache.
+        await send_reply_panel(query.message, locale, is_admin=is_admin, telegram_id=user.telegram_id)

@@ -7,12 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import OrderCB
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.orders import order_history_list
+from app.bot.keyboards.orders import STATUS_EMOJI, order_history_list
 from app.database.models.user import User
 from app.database.repositories.order_repo import OrderRepo
 from app.locales.i18n import t
 from app.utils.money import format_minor
 from app.utils.pagination import Page
+from app.utils.time import as_utc
 
 router = Router(name="orders.history")
 
@@ -38,11 +39,22 @@ async def _render_detail(session: AsyncSession, order_id: str, locale: str) -> t
     if order is None:
         return None
 
-    lines = [f"📦 <b>{order.order_number}</b>", f"Status: {order.status.value}", ""]
+    lines = [
+        f"{STATUS_EMOJI.get(order.status.value, '•')} <b>{order.order_number}</b> — {order.status.value}",
+        "",
+    ]
+    if order.placed_at:
+        lines.append(t("orders.detail_placed", locale, placed_at=f"{as_utc(order.placed_at):%d %b %Y, %H:%M} UTC"))
+        lines.append("")
+
+    lines.append(t("orders.detail_items", locale))
     for item in order.items:
-        lines.append(f"• {item.product_name} — {format_minor(item.unit_price_minor, order.currency)} x{item.qty}")
+        lines.append(f"• {item.product_name} — {format_minor(item.unit_price_minor, order.currency)} ×{item.qty}")
+
     lines.append("")
-    lines.append(f"Total: {format_minor(order.total_minor, order.currency)}")
+    lines.append(f"💰 <b>Total: {format_minor(order.total_minor, order.currency)}</b>")
+    lines.append("")
+    lines.append(t("orders.detail_hint", locale))
 
     return "\n".join(lines), with_nav([], locale, back_target="orders", home=True)
 

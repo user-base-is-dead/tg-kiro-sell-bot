@@ -1,43 +1,61 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.database.models.order import WarrantyStatus
+from app.database.repositories.user_repo import UserRepo
 from app.database.repositories.warranty_repo import WarrantyRepo
+from app.database.session import session_scope
+from app.services.warranty_service import format_duration, now_utc, reject_claim
+from app.utils.time import as_utc
 
 logger = logging.getLogger(__name__)
 
+REASON = "Auto-closed: no response from our team within the review window."
 
-async def auto_reject_expired_warranty_claims(session: AsyncSession, bot) -> None:
-    """Auto-reject warranty claims that haven't been responded to within 24 hours."""
-    warranty_repo = WarrantyRepo(session)
-    pending = await warranty_repo.list_pending_claims()
 
-    for warranty in pending:
-        if warranty.status != WarrantyStatus.CLAIMED or warranty.claim_started_at is None:
-            continue
+async def auto_reject_expired_warranty_claims(sessionmaker: async_sessionmaker, bot: Bot) -> int:
+    """Close claims that blew through their staff-response deadline.
 
-        now = datetime.now(UTC)
-        claim_age = now - warranty.claim_started_at
+    Driven entirely off the stored `claim_deadline_at`, so a run after any amount of downtime
+    catches everything that lapsed while the process was gone, exactly once. Closing a claim this
+    way follows the same rule as a manual /reject: the warranty falls back to its original
+    timeline, neither restarted nor extended.
+    """
+    async with session_scope(sessionmaker) as session:
+        now = now_utc()
+        repo = WarrantyRepo(session)
+        user_repo = UserRepo(session)
+        stale = await repo.list_claims_past_deadline(now)
 
-        if claim_age >= timedelta(hours=24):
-            warranty.status = WarrantyStatus.VOID
-            warranty.claim_notes = "Auto-rejected: No response from admin within 24 hours."
+        for warranty in stale:
+            outcome = reject_claim(warranty, reason=REASON, at=now)
 
-            message = (
-                "❌ Your warranty claim has been <b>AUTO-REJECTED</b> due to no response within 24 hours.\n\n"
-                "If you believe this is incorrect, please contact our Customer Support team."
+            if outcome.granted_seconds > 0:
+                tail = (
+                    f"⏱️ Your warranty is still active with <b>{format_duration(outcome.granted_seconds)}</b> "
+                    f"remaining (expires {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC)."
+                )
+            else:
+                tail = "The warranty period for this item has also ended."
+
+            text = (
+                "❌ Your warranty claim was <b>closed automatically</b> because our team didn't "
+                "respond in time.\n\n"
+                f"{tail}\n\n"
+                "We're sorry about that — please contact Customer Support and we'll pick it up."
             )
 
-            try:
-                if warranty.order_item.order.user_id:
-                    await bot.send_message(warranty.order_item.order.user_id, message)
-            except Exception as e:
-                logger.error(f"Failed to send auto-reject message: {e}")
+            owner = await user_repo.get_by_id(warranty.user_id)
+            if owner is not None:
+                try:
+                    await bot.send_message(owner.telegram_id, text)
+                except TelegramAPIError as exc:
+                    logger.warning("Auto-reject notice to %s failed (%s)", owner.telegram_id, exc)
 
-            logger.info(f"Auto-rejected warranty claim {warranty.id}")
+            logger.info("Auto-rejected warranty claim %s", warranty.id)
 
-    await session.flush()
+        return len(stale)

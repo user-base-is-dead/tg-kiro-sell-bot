@@ -29,10 +29,13 @@ async def test_redeem_credits_wallet_and_marks_exhausted_at_max_uses(sqlite_sess
     user_id = await _make_user(sqlite_sessionmaker, 2001)
 
     async with sqlite_sessionmaker() as session:
-        gift = await redeem_gift_code(session, user_id=user_id, code_plaintext=code)
+        claimed = await redeem_gift_code(session, user_id=user_id, code_plaintext=code)
         await session.commit()
-        assert gift.used_count == 1
-        assert gift.status.value == "EXHAUSTED"
+        assert claimed.gift.used_count == 1
+        assert claimed.gift.status.value == "EXHAUSTED"
+        # A credit gift moves money, not stock — no order is involved.
+        assert claimed.order is None
+        assert claimed.delivered_payload is None
 
     async with sqlite_sessionmaker() as session:
         wallet = await WalletRepo(session).get_or_create(user_id, currency="USD")

@@ -13,6 +13,25 @@ from app.utils.errors import UserError
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LOCALE = "en"
+
+
+def _locale_of(user: Any) -> str:
+    """Read the user's locale without ever raising.
+
+    This middleware is outermost, so by the time it handles an exception the DbSession middleware
+    has already rolled back and closed the session — which expires the `User` and turns a plain
+    attribute read into a lazy refresh that raises DetachedInstanceError. That exception would
+    escape the error handler itself, so the user gets no message at all and the original traceback
+    is buried under a confusing second one. A slightly-wrong language is a much better failure than
+    silence."""
+    if user is None:
+        return DEFAULT_LOCALE
+    try:
+        return user.locale or DEFAULT_LOCALE
+    except Exception:  # noqa: BLE001 - the notification must survive any ORM state
+        return DEFAULT_LOCALE
+
 
 class ErrorMiddleware(BaseMiddleware):
     """Outermost middleware. Catches everything so the poller never dies from a handler bug.
@@ -53,9 +72,7 @@ class ErrorMiddleware(BaseMiddleware):
     async def _notify_user(self, event: TelegramObject, data: dict[str, Any], key: str, **vars: Any) -> None:
         if not isinstance(event, Update):
             return
-        user = data.get("user")
-        locale = user.locale if user else "en"
-        text = t(key, locale, **vars)
+        text = t(key, _locale_of(data.get("user")), **vars)
         try:
             if event.message:
                 await event.message.answer(text)

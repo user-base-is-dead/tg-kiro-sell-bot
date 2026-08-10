@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.interaction_state import InteractionState
+from app.utils.time import as_utc
 
 
 class InteractionStateRepo:
@@ -36,7 +37,8 @@ class InteractionStateRepo:
         state = result.scalar_one_or_none()
         if state is None:
             return None
-        if state.expires_at < datetime.now(UTC):
+        # `as_utc`: SQLite returns this naive, and comparing it to an aware `now` raises.
+        if as_utc(state.expires_at) < datetime.now(UTC):
             return None
         return json.loads(state.payload_json)
 

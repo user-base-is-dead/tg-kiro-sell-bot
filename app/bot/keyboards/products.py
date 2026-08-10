@@ -107,4 +107,6 @@ def product_detail(product: Product, view: ProductView, locale: str, category_id
     rows: list[list[InlineKeyboardButton]] = []
     if view.display_status.value in ("IN_STOCK", "LOW_STOCK"):
         rows.append([btn("🛒 Buy Now", ProductCB(action="buy", id=str(product.id)).pack(), SUCCESS)])
+    # "buy" opens the payment-method chooser, not the confirm screen — see
+    # orders/checkout.py:render_payment_choice.
     return with_nav(rows, locale, back_target=category_back_target(category_id))

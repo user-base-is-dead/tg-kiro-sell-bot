@@ -41,6 +41,9 @@
     "prompt": "🌐 Choose your language:",
     "changed": "✅ Language set to English."
   },
+  "panel": {
+    "caption": "--"
+  },
   "errors": {
     "insufficient_balance": "💳 Insufficient balance. Top up your wallet and try again.",
     "out_of_stock": "🔴 Sorry, this item just went out of stock.",
@@ -55,14 +58,13 @@
     "expired": "📭 <b>No gifts available right now</b>\n\nWe don't have any active gifts at the moment, but we're always adding new rewards and special offers! Check back soon — and keep an eye on your notifications so you don't miss the next one. 🎁",
     "exhausted": "📭 <b>No gifts available right now</b>\n\nWe don't have any active gifts at the moment, but we're always adding new rewards and special offers! Check back soon — and keep an eye on your notifications so you don't miss the next one. 🎁",
     "limit_reached": "You've already claimed this gift! 😊 We'll notify you when new gifts are available.",
-    "redeemed": "✅ Redeemed! {amount} added to your balance.",
+    "redeemed": "🎉 <b>Gift claimed!</b>\n\n💰 <b>{amount}</b> has been added to your wallet.\n\nIt's ready to spend right now — head to 🛍️ Products and pick something up, or keep it for later. Your balance is always in 👤 Profile.\n\nThanks for being here. More gifts drop from time to time, so keep notifications on. 🎁",
     "claim": "✅ Claim",
-    "claimed_toast": "✅ Gift claimed!",
+    "claimed_toast": "🎉 Gift claimed!",
     "none_available_toast": "No active gift available.",
     "grants_credit": "💰 <b>You get:</b> {amount} wallet credit",
-    "grants_product": "📦 <b>You get:</b> {product}",
-    "redeemed_product": "🎉 <b>Yours!</b>\n\n📦 {product}\n🧾 Order <code>{order_number}</code>\n\n<b>Your item:</b>\n<code>{payload}</code>\n\n⚠️ Save this now — it is shown only once. You can always find the order in 📦 Orders.",
-    "redeemed_product_manual": "🎉 <b>Claimed!</b>\n\n📦 {product}\n🧾 Order <code>{order_number}</code>\n\nOur team is preparing your item and will deliver it here shortly. You can track it in 📦 Orders."
+    "grants_item": "🎁 <b>You get:</b> one gift item, delivered instantly.",
+    "redeemed_item": "🎉 <b>It's yours!</b>\n\nHere's your gift — copy it somewhere safe:\n\n<code>{payload}</code>\n\n⚠️ <b>This is shown once.</b> We can't display it again, so save it before you leave this screen.\n\nSomething not working? 💬 Support will sort you out.\n\nThanks for being here — more gifts drop from time to time, so keep notifications on. 🎁"
   },
   "support": {
     "menu": "💬 <b>Support</b>\n\nNeed help with an order, a payment, or your wallet? Our team is here for you.\n\n🎫 <b>Create Ticket</b> — describe your issue and we'll get back to you.\n📋 <b>My Tickets</b> — check replies and the status of your past tickets.\n\n⏱️ Typical reply time: within a few hours.",
@@ -73,8 +75,14 @@
     "created": "✅ Ticket <b>{ticket_number}</b> opened. Just reply here to chat with support — we'll get back to you soon.",
     "created_undelivered": "⚠️ Ticket <b>{ticket_number}</b> was saved, but we couldn't reach our support team just now. It is not lost — we'll pick it up as soon as the connection is back.",
     "ticket_closed": "This ticket is closed. Open a new one if you still need help.",
-    "no_tickets": "You don't have any support tickets yet.",
-    "closed_notice": "🔒 This ticket has been closed."
+    "no_tickets": "📋 <b>MY TICKETS</b>\n\nYou haven't opened any tickets yet.\n\nWhen something goes wrong with an order, a payment, or your wallet, open a ticket from 💬 Support and it will show up here with our replies.",
+    "closed_notice": "🔒 This ticket has been closed.",
+    "tickets_title": "📋 <b>MY TICKETS</b>\n\nEvery ticket you've opened with us, newest first. Tap one to read the conversation and see where it stands.\n\n🟢 Open  🟡 Waiting on us  🔵 Resolved  ⚫ Closed\n\n💬 Open tickets keep going — just reply in the chat to add to one.",
+    "ticket_opened": "🕒 Opened: {opened_at}",
+    "ticket_category": "📂 Category: {category}",
+    "ticket_conversation": "💬 <b>Conversation</b>",
+    "ticket_hint_open": "✍️ Reply here in the chat and your message goes straight to our team — no need to open a second ticket.",
+    "ticket_hint_closed": "🔒 This ticket is closed, so replies won't reach us. Open a fresh one from 💬 Support if you still need a hand."
   },
   "referral": {
     "screen_title": "🔗 <b>Refer & Earn</b>",
@@ -86,7 +94,12 @@
     "confirm_body": "{name}\n\n💰 Price: {price}\n💳 Your balance: {balance}\n\nConfirm this purchase?",
     "placed": "✅ Order <code>{order_number}</code> placed!",
     "auto_delivery": "📬 <b>Here's your item:</b>\n\n<code>{payload}</code>\n\n🛡️ Warranty: {warranty_days} days.",
+    "manual_pending": "🙋 <b>Being prepared</b>\n\nOur team is getting your item ready and will deliver it right here. You can track it under 📦 Orders.",
+    "delivery_info": "📋 <b>How to use it:</b>\n{info}",
     "empty_history": "📦 <b>MY ORDERS</b>\n\n🛍️ No purchases yet! Browse our store to find amazing products and make your first purchase today. Your orders will appear here once you buy something.",
-    "history_title": "📦 <b>MY ORDERS</b>"
+    "history_title": "📦 <b>MY ORDERS</b>\n\nEverything you've bought from us, newest first. Tap any order to see what was in it, what you paid, and how it was delivered.\n\n🟢 Completed  🔵 Processing  🟡 Pending  🔴 Cancelled\n\n🛡️ Items that came with a warranty are tracked under 🔧 Warranty.",
+    "detail_placed": "🕒 Placed: {placed_at}",
+    "detail_items": "🛍️ <b>Items</b>",
+    "detail_hint": "🧾 Keep this order number handy — quoting it in 💬 Support is the fastest way for us to find your purchase."
   }
 }

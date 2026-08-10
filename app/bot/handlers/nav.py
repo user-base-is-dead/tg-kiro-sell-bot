@@ -12,7 +12,7 @@ from app.bot.filters.is_admin import is_admin_user
 from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
 from app.bot.keyboards.common import back_keyboard
-from app.bot.keyboards.main_menu import main_inline_keyboard, main_reply_keyboard
+from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.core.config import get_settings
 from app.database.models.order import OrderStatus
 from app.database.models.user import User
@@ -52,16 +52,13 @@ async def on_nav(
         await state.clear()
         is_admin = await is_admin_user(session, user.telegram_id)
         logger.debug("Navigating to home with is_admin=%s", is_admin)
+        # No panel re-send here. The reply keyboard is `is_persistent=True`, so it is still on the
+        # client from `/start`; re-installing it would need a fresh message (edits cannot carry a
+        # reply keyboard) and that extra bubble is exactly what we refuse to put in the chat.
         await query.message.edit_text(
             t("welcome.subtitle", user.locale, name=user.first_name or "there"),
             reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
         )
-        try:
-            reply_kb = main_reply_keyboard(user.locale, is_admin=is_admin)
-            await query.message.answer(" ", reply_markup=reply_kb)
-            logger.debug("Reply keyboard sent on home navigation")
-        except Exception as e:
-            logger.error("Failed to send reply keyboard on home navigation: %s", e, exc_info=True)
         await query.answer()
         return
 

@@ -21,11 +21,6 @@ Stack: **Python 3.12+, aiogram 3.x, PostgreSQL, SQLAlchemy 2.x (async), Alembic,
   3. `DbSessionMiddleware` — opens an `AsyncSession` per update, injects it as a handler kwarg, commits/rolls back at the end.
   4. `UserMiddleware` — upserts the `User` row from `event.from_user`, loads locale, caches `chat_id`, injects `user` into handler data.
   5. `BanCheckMiddleware` — short-circuits banned users with a notice.
-
-  Plus one **inner** middleware on the message observer only:
-  `SupportExitNoticeMiddleware` — when a user with a live support ticket sends a message that was
-  handled by some *other* handler (a menu button, a wizard step), it tells them once that the
-  message did **not** reach support. Runs inner, so it can see which handler won.
 - **Admin authorization is a `Filter`** (`IsAdmin`), applied per-handler/router — never inferred from a hidden button. Every admin router requires it explicitly; nothing admin-only is reachable by ID guess or replayed callback alone.
 - **FSM** via aiogram's `FSMContext` backed by `RedisStorage` (survives restarts, supports multi-step admin wizards and ticket creation). States grouped in `states/` per domain (`ProductForm`, `CategoryForm`, `TicketForm`, `TopUpForm`, …).
 - **Callback data**: aiogram's `CallbackData` factory (typed, `prefix:field1:field2` packed string, must stay ≤ 64 bytes — tighter than Discord's 100-char limit). Example: `class ProductCB(CallbackData, prefix="prod"): action: str; id: str`. Anything that doesn't fit (long filter lists, multi-field wizards) goes into an `InteractionState` row keyed by a short id, referenced from callback_data instead of embedded.
@@ -70,10 +65,48 @@ unstyled button — that's how styling drifts back out of a screen.
 - `ReplyKeyboardMarkup` (`main_reply_keyboard`) is the persistent bottom panel mirroring the same
   entries in the same order, with a leading `🚀 Start` row — the panel is the only surface visible
   from *inside* another screen, so it carries the way back to the top. Its buttons send their
-  localized label as plain text, matched back to an i18n key by the `MenuButton` filter — so it must
-  be re-sent whenever the locale changes, or the labels stop matching.
+  localized label as plain text, matched back to an i18n key by the `MenuButton` filter. A reply
+  keyboard needs a message of its own. Three Bot API facts, all verified against the live bot, box
+  this in and every "simpler" design has already failed on one of them:
+  1. one `sendMessage` cannot carry an inline keyboard and a reply keyboard together;
+  2. a message sent carrying a `ReplyKeyboardMarkup` **cannot** be edited to show an inline one —
+     `editMessageReplyMarkup` is rejected, and the menu ships with no buttons. So there is no
+     arrangement where a single bubble holds both;
+  3. but `deleteMessage` does **not** take the reply keyboard down — it lives on the chat's input
+     area, not on the message.
+- So `send_reply_panel` (`app/bot/panel.py`) sends a throwaway carrier and deletes it immediately.
+  The carrier is briefly visible while the delete round-trips, so it is installed **once per
+  (telegram_id, locale, is_admin) per process** via an in-memory set — the flicker is a rare one-off
+  instead of something on every `/start`. The cache is deliberately not persisted: a bot restart is
+  the recovery path for a user who somehow lost their panel.
+- **Not** to be re-introduced (each shipped once and was the bug): a carrier left in the chat (the
+  stray `📌 Menu` bubble), a zero-width-blank carrier (empty-looking bubble), a re-send on every
+  navigation (constant flicker), and editing the inline grid onto the panel message (fact 2 above —
+  the buttons silently vanish). `tests/unit/test_reply_panel.py` pins all of this.
+- Because `is_persistent=True`, the panel survives navigation, so `home` and `back` just edit the
+  inline screen and re-send nothing. `/start` re-installs only on a cache miss; a **language
+  change** always re-installs, since the locale is part of the key and the buttons send their own
+  localized label as plain text.
 - `InlineKeyboardMarkup` = everything else contextual: category/product lists, pagination,
   confirmations, admin CRUD, settings.
+
+### Deleting a product
+
+`ProductRepo.delete` really deletes the row. It used to be blocked by `order_items.product_id`, and
+the admin screen surfaced that as a "this product has order history — disable it instead" dead end.
+Migration **0013** made `order_items.product_id` and `stock_items.product_id` nullable so references
+can be *detached* rather than cascaded or refused. The rule per referencing table:
+
+| Table | On delete | Why |
+|---|---|---|
+| `order_items` | `product_id → NULL` | Row snapshots name/price/warranty, so it still renders. |
+| `stock_items` (sold) | `product_id → NULL` | Keeps the delivered payload for warranty redelivery. |
+| `stock_items` (available) | deleted | Unsold keys for an unbuyable product are dead weight. |
+| `stock_items` (available or held) | deleted | Unsold keys for an unbuyable product are dead weight. |
+
+The admin flow is `delete` (confirmation screen) → `delete_ok` (does it). The `IntegrityError`
+fallback that disables the product instead is now only a net for an unanticipated reference; it logs
+loudly and should never fire.
 
 ---
 
@@ -91,7 +124,7 @@ All tables: `id` (BigInteger PK or UUID — using UUID for public-ish entities l
 ### Catalog
 
 - **`categories`** — `id`, `name`, `slug` (unique), `description`, `emoji`, `image_file_id` (Telegram `file_id`, not a URL — reuses uploaded file), `sort_order`, `is_active`.
-- **`products`** — `id`, `category_id`, `name`, `slug` (unique), `description`, `price_minor`, `currency`, `status` (`IN_STOCK`/`LOW_STOCK`/`OUT_OF_STOCK`/`COMING_SOON`/`DISABLED` — derived from stock count except the two manual overrides), `fulfillment_mode` (`AUTO`/`MANUAL`), `low_stock_threshold`, `image_file_id`, `thumbnail_file_id`, `delivery_info`, `warranty_days`, `notes`, `max_per_user`, `is_active`, `sort_order`.
+- **`products`** — `id`, `category_id`, `name`, `slug` (unique), `description`, `price_minor`, `currency`, `status` (`IN_STOCK`/`LOW_STOCK`/`ON_HOLD`/`OUT_OF_STOCK`/`COMING_SOON`/`DISABLED` — derived from stock count except the two manual overrides), `fulfillment_mode` (`AUTO`/`MANUAL`), `low_stock_threshold`, `image_file_id`, `thumbnail_file_id`, `delivery_info`, `warranty_days`, `notes`, `max_per_user`, `is_active`, `sort_order`.
 - **`stock_items`** — `id`, `product_id`, `payload` (encrypted at rest, Fernet/AES-GCM via `ENCRYPTION_KEY`), `status` (`AVAILABLE`/`RESERVED`/`DELIVERED`/`VOID`), `order_item_id?`, `batch_id`, `added_by_admin_id`. Index `(product_id, status)` — the hot claim path.
 
 ### Commerce
@@ -99,8 +132,45 @@ All tables: `id` (BigInteger PK or UUID — using UUID for public-ish entities l
 - **`orders`** — `id` (UUID), `order_number` (unique, human-readable `ORD-8F3K2Q`), `user_id`, `status` (`PENDING`/`PROCESSING`/`COMPLETED`/`CANCELLED`/`FAILED`), `subtotal_minor`, `discount_minor`, `total_minor`, `currency`, `payment_txn_id`, `idempotency_key` (unique), `placed_at`, `completed_at`, `cancelled_at`, `failure_reason`.
 - **`order_items`** — `id`, `order_id`, `product_id`, snapshot fields (`product_name`, `unit_price_minor`, `qty`, `warranty_days`) so later product edits never rewrite history.
 - **`deliveries`** — `id`, `order_item_id`, `mode`, `payload?`, `delivered_at`, `delivered_by_admin_id?`, `delivery_message_id` (Telegram message id, for reference/audit).
-- **`order_holds`** — `id`, `product_id`, `user_id`, `order_id?`, `held_at`, `expires_at` (default `held_at + 5 min`). Index `(product_id, expires_at)`. A checkout screen reserves the product for a 5-minute payment window so two users can't stare at the same last unit; the hold is advisory (the transactional stock claim in §7.3 is still what makes overselling impossible).
+- **`order_holds`** — *removed in migration 0014.* It reserved a whole **product** for one buyer for five minutes, which is the wrong grain: a product is backed by many independent credentials, so one checkout made all of them read as unavailable. Reservations now live on the credential — see "Credential-level holds" below. Do not reintroduce a product-level hold.
 - **`warranties`** — `id`, `order_item_id` (unique), `user_id`, `starts_at`, `expires_at`, `status`, `claim_notes`, `claim_started_at?`, `claim_ticket_id?` → support_tickets.id. The last two are set when a user files a claim: `claim_started_at` starts the 24h staff-response clock, `claim_ticket_id` links the claim to the support ticket it is discussed in.
+
+### Credential-level holds
+
+**One credential belongs to at most one customer at a time, and one buyer's reservation must never
+make the product look unavailable while another credential is free.** Product A with 20 logins must
+serve 10 simultaneous buyers.
+
+The reservation lives on the `stock_items` row it applies to — `status`, `held_by_user_id`,
+`held_at`, `held_until`. One row, one source of truth: a side table can disagree with the
+credential's own status, and a credential that reads HELD in one place and AVAILABLE in another is
+exactly how the same login reaches two people. `app/services/stock_hold_service.py` owns every
+transition; nothing else may write those columns.
+
+| Transition | When |
+|---|---|
+| AVAILABLE → HELD | buyer picks a payment method (wallet **or** crypto), 5-minute window |
+| HELD → AVAILABLE | Back/Cancel (immediately), or the window closes |
+| HELD → RESERVED | inside the order transaction, `claim_held` |
+| RESERVED → DELIVERED | handed over; permanently that buyer's |
+| RESERVED → AVAILABLE | order cancelled/refunded before delivery |
+
+Rules that are easy to break:
+
+- **Every transition is one conditional `UPDATE`** whose `WHERE` restates the precondition, and the
+  caller checks `rowcount`. Never "check, then act" — another buyer fits in between. Ten buyers
+  racing for one credential produce exactly one `rowcount == 1`.
+- **A lapsed hold counts as free everywhere immediately**, not once the sweep relabels it. Waiting
+  on the job would leave a credential unbuyable for up to an interval, and — worse — let two
+  definitions of "available" disagree.
+- **`claim_held` is what resolves payment-succeeds-versus-hold-expires.** It matches on holder *and*
+  status, so if expiry won, the order fails cleanly rather than delivering a credential someone else
+  now holds. A credential can never be SOLD to A and AVAILABLE to B.
+- **Availability is per credential.** `ProductStatus.ON_HOLD` (distinct from `OUT_OF_STOCK`) means
+  every remaining credential is held: that un-does itself within five minutes, so the shopper is
+  told to wait rather than turned away. Only all-sold is `OUT_OF_STOCK`.
+- `app/jobs/hold_expiry.py` runs every 30s. The backend owns expiry — the buyer can close Telegram
+  and the credential still comes back — but correctness does not ride on the interval.
 
 ### Crypto payments
 
@@ -108,21 +178,22 @@ All tables: `id` (BigInteger PK or UUID — using UUID for public-ish entities l
 
 ### Growth
 
-- **`gift_codes`** — `id`, `code` (unique, hashed + last-4 shown), `value_minor`, `currency`, `max_uses`, `used_count`, `expires_at`, `status`, `created_by_admin_id`, `per_user_limit`.
-- **`gift_redemptions`** — `id`, `gift_code_id`, `user_id`, `wallet_transaction_id`, `redeemed_at`; unique `(gift_code_id, user_id)`.
+- **`gift_items`** — `id`, `gift_code_id`, `payload` (encrypted), `status` (`AVAILABLE`/`DELIVERED`), `claimed_by_user_id?`, `claimed_at?`. A giveaway's **own** stock. Gift codes never point at a catalog product: a promo must not draw down `stock_items` that paying customers are queueing for, and gift stock has to be countable on its own. Claiming is a conditional UPDATE on one row, so two people pressing Claim at once cannot receive the same line. A claim creates **no order** — a giveaway is not a purchase.
+- **`gift_codes`** — `id`, `code` (unique, hashed + last-4 shown), `kind` (`CREDIT`/`ITEM`), `value_minor?`, `currency`, `max_uses`, `used_count`, `expires_at`, `status`, `created_by_admin_id`, `per_user_limit`, `description`. `kind` discriminates the payload: a CREDIT code fills `value_minor` and credits the wallet; an ITEM code owns rows in `gift_items` and hands one over. Exactly one is set — enforced in `create_gift_code`, not by a DB constraint. For an ITEM code `max_uses` **is** the item count (one claim, one item), so the wizard never asks for it. There was a `PRODUCT` kind pointing at `products.id`; it was removed in migration 0015 for the reason in `gift_items`.
+- **`gift_redemptions`** — `id`, `gift_code_id`, `user_id`, `wallet_transaction_id?`, `order_id?` → orders.id, `redeemed_at`; unique `(gift_code_id, user_id)`. Mirrors the code's kind: a credit claim points at the transaction it created, a product claim at the order.
 - **`referrals`** — `id`, `referrer_id`, `referee_id` (unique), `qualified_at?`, `reward_minor`, `reward_txn_id?`. Qualification rule (first completed order) lives in `bot_settings`, not code. Referral link = `t.me/<bot_username>?start=ref_<referral_code>`.
 
 ### Support & ops
 
 - **`support_tickets`** — `id`, `ticket_number` (unique), `user_id`, `category`, `subject`, `status` (`OPEN`/`PENDING`/`RESOLVED`/`CLOSED`), `priority`, `topic_id` (Telegram **forum topic** id inside `SUPPORT_GROUP_ID` — the Telegram analog of "private channel per ticket"), `assigned_staff_id?`, `opened_at`, `closed_at`, `close_reason`.
 - **`ticket_messages`** — `id`, `ticket_id`, `author_type` (`USER`/`STAFF`/`SYSTEM`), `author_telegram_id`, `content`, `attachment_file_ids` (Array), `relayed_message_id`.
-- **`broadcasts`** — `id`, `created_by_admin_id`, `title`, `body`, `image_file_id?`, `buttons_json?`, `audience_filter_json`, `status`, `total_targets`, `sent_count`, `failed_count`, `started_at`, `finished_at`.
+- **`broadcasts`** — `id`, `created_by_admin_id`, `title`, `body`, `parts_json?`, `image_file_id?`, `buttons_json?`, `audience_filter_json`, `status`, `total_targets`, `sent_count`, `failed_count`, `started_at`, `finished_at`. `parts_json` holds `[{chat_id, message_id}]` pointing at the messages the admin composed; delivery `copy_message`s them in order, which carries any content type. NULL means a legacy text-only broadcast that sends `body`.
 - **`broadcast_deliveries`** — `id`, `broadcast_id`, `user_id`, `status` (`PENDING`/`SENT`/`FAILED`/`BLOCKED`), `error?`. Unique `(broadcast_id, user_id)` — worker is safely resumable after a crash/restart.
 - **`bot_settings`** — `key` (unique), `value_json`, `updated_by_admin_id`, `updated_at`. In-memory cache with invalidation on write.
 - **`audit_logs`** — `id`, `actor_telegram_id`, `actor_role`, `action`, `target_type`, `target_id`, `metadata_json`, `context`, `created_at`. Indexed on `(actor_telegram_id, created_at)` and `(action, created_at)`.
 - **`interaction_states`** — `id` (short random token), `user_id`, `payload_json`, `expires_at` — overflow storage for callback_data that would exceed 64 bytes, and for wizard step state that needs to survive across FSM resets.
 
-Indexes: every FK, plus `orders(user_id, placed_at)`, `wallet_transactions(wallet_id, created_at)`, `stock_items(product_id, status)`, `support_tickets(status, opened_at)`, `warranties(expires_at, status)`, `order_holds(product_id, expires_at)`, `crypto_payments(tx_hash)`.
+Indexes: every FK, plus `orders(user_id, placed_at)`, `wallet_transactions(wallet_id, created_at)`, `stock_items(product_id, status)`, `support_tickets(status, opened_at)`, `warranties(expires_at, status)`, `stock_items(status, held_until)`, `crypto_payments(tx_hash)`.
 
 ### Migrations
 
@@ -161,7 +232,7 @@ app/
       products.py, orders.py, common.py (nav_row, confirm_row, back_keyboard, with_nav)
       styles.py         PRIMARY/SUCCESS/DANGER/NEUTRAL + btn()/url_btn() — the only `style` users
     middlewares/
-      error.py, throttling.py, db_session.py, user.py, ban_check.py, support_exit_notice.py
+      error.py, throttling.py, db_session.py, user.py, ban_check.py
     filters/
       is_admin.py (IsAdmin + is_admin_user), menu_button.py (reply-label → i18n key)
     states/
@@ -173,14 +244,15 @@ app/
     session.py          async engine + sessionmaker + session_scope
     base.py             declarative base + BigIntPKMixin/TimestampMixin/new_uuid
     models/             admin, audit, broadcast, catalog, crypto, gift, interaction_state,
-                        order (Order/OrderItem/OrderHold/Delivery/Warranty), referral,
+                        order (Order/OrderItem/Delivery/Warranty), referral,
                         settings, support, user, wallet
     repositories/       one per aggregate — all queries live here
-    migrations/         Alembic (0001 baseline; 0002/0004/0005 no-ops; 0006 warranty claim fields)
+    migrations/         Alembic (0001 baseline; 0002/0004/0005 no-ops; 0006 warranty claim fields;
+                        0016 warranty/claim clock split)
   services/
-    catalog_service.py, order_service.py, order_hold_service.py, wallet_service.py,
+    catalog_service.py, order_service.py, stock_hold_service.py, wallet_service.py,
     referral_service.py, gift_service.py, support_service.py, broadcast_service.py,
-    settings_service.py, stats_service.py,
+    settings_service.py, stats_service.py, warranty_service.py,
     payments/
       provider.py       PaymentProvider ABC
       registry.py       provider lookup (currently only "manual")
@@ -213,9 +285,11 @@ deploy/ , Dockerfile , docker-compose.yml
 
 Differences from the original plan worth knowing: there is no `is_owner.py` filter (role lives on the
 `admins` row), no separate `referrals` admin screen, no `utils/ids.py` (number generators live with
-the models/services that use them), and `product_service.py`/`user_service.py`/`warranty_service.py`/
-`audit_service.py` were never needed as separate modules — that logic sits in `catalog_service.py`,
-the repositories, and the handlers' service calls.
+the models/services that use them), and `product_service.py`/`user_service.py`/`audit_service.py`
+were never needed as separate modules — that logic sits in `catalog_service.py`, the repositories,
+and the handlers' service calls. `warranty_service.py` does exist: the claim/expiry rules are shared
+by the customer screen, both admin commands, and two scheduled jobs, and having four copies of that
+arithmetic is exactly how they drifted apart before.
 
 `handlers/` never contains business logic; `services/` never imports `aiogram`. Each admin CRUD flow follows the same shape: list screen → detail screen → FSM wizard for create/edit → confirm → service call → audit log.
 
@@ -247,10 +321,22 @@ Main menu — inline (attached to the welcome message) and mirrored by the persi
          → order confirmation screen with order number
        → 🔙 Back → 🏠 Home
 
-📦 Orders → paginated order history → order detail (items, status, delivery/warranty links)
+📦 Orders → order history, newest first, 12 per page, one styled row per order
+         → order detail (status badge, placed-at, items, total)
 
 💬 Support → 🎫 Create Ticket (category → free-text issue → confirm) → topic created in staff group
-          → 📋 My Tickets → ticket detail (message thread mirrors relay) → reply / close
+          → 📋 My Tickets → newest first, 12 per page
+            → ticket detail (status badge, category, opened-at, last 8 messages, and whether a
+              reply will actually reach anyone — a closed ticket otherwise looks identical to an
+              open one, so people reply into a thread nobody reads)
+
+Both list screens, plus the Warranty list, carry a description under the heading rather than a bare
+title. That is not decoration: a bubble and its inline keyboard share one width and Telegram takes
+the wider of the two, so a two-word title squeezes its own button column into a narrow strip. Screens
+with no natural copy to widen them use `PAD` from `utils/text.py` instead (see the product detail
+screen); these have real copy, so they don't. `tests/integration/test_list_screen_copy.py` asserts a
+minimum width so the descriptions can't be trimmed back to titles without the buttons going narrow
+again.
 
 🌐 Language → 🇬🇧 English / 🇮🇳 Hindi → persists to users.locale, re-renders current screen
 
@@ -258,8 +344,11 @@ Main menu — inline (attached to the welcome message) and mirrored by the persi
 
 🔗 Refer & Earn → shows referral link + stats (total/qualified/reward earned) → share button
 
-🔧 Warranty → list of warranties (status emoji, product, start/expiry, time remaining), paginated
-            → 🛡️ Claim Warranty → opens a support ticket, sets claim_started_at (24h staff clock)
+🔧 Warranty → list of warranties, oldest first, 12 per page with ◀️ Prev / Next ▶️
+            → each entry: number, product, start → expiry, time remaining, status emoji
+            → 🛡️ Claim #n button per entry — always present, even for expired or already-claimed
+              items, so the customer can always find out why one can't be claimed
+            → filing a claim opens a support ticket and freezes the payout figure (see §Warranty)
             → empty state explains that warranties are created automatically on purchase
 
 💳 Top Up → ✏️ Enter Custom Amount (FSM, $1.00–$10,000.00)
@@ -303,9 +392,11 @@ Main menu — inline (attached to the welcome message) and mirrored by the persi
             (manual provider only — crypto top-ups credit themselves, no admin step)
 
 🛡️ Warranty claims → handled by command inside the claim's support topic:
-            /done <warranty_id> approves, /reject <warranty_id> rejects. Both are on a router with
-            a blanket IsAdmin() filter, and both are listed in the guard's _ADMIN_COMMANDS so a
-            non-admin gets "not authorized" instead of silence.
+            /done <warranty_id> resolves (grants the held time to the replacement, re-based onto
+            the resolution moment), /reject <warranty_id> [reason] drops the claim and returns the
+            warranty to its original, unchanged timeline. Both are on a router with a blanket
+            IsAdmin() filter, and both are listed in the guard's _ADMIN_COMMANDS so a non-admin
+            gets "not authorized" instead of silence. See §Warranty timing for the rules.
 
 🎁 Gift Codes → ➕ Create (value, currency, expiry, max uses, per-user limit) → 📋 List → usage stats → disable
 
@@ -314,8 +405,14 @@ Main menu — inline (attached to the welcome message) and mirrored by the persi
 💬 Support → open tickets queue → assign → the relay itself happens via forum-topic messages,
             not a separate admin screen — admin just replies inside the ticket's topic
 
-📢 Broadcast → compose (title, body, image, buttons, audience filter) → preview → confirm → send
+📢 Broadcast → compose: send any mix of text/photo/video/audio/file/voice, in order
+               ([✅ Done][❌ Abort], max 10 parts)
+             → preview: each part copied back to the admin verbatim ([🔙 Back discards][🚀 Send])
              → resumable worker (rate-limited) → live progress (sent/failed/blocked) → final report
+             Only the *coordinates* of the admin's messages are stored (`broadcasts.parts_json`);
+             delivery is `copy_message`, which reproduces any content type with no per-type
+             branching and no re-upload. No title step: `title` is derived from the first text
+             part, since it is only ever shown to admins.
 
 ⚙️ Settings → edit bot_settings (currency, referral reward, qualification rule, low-stock threshold, etc.)
 
@@ -439,9 +536,42 @@ indexed and checked so one transfer can never be credited twice.
 | Job | Interval | What |
 |---|---|---|
 | `warranty_expiry` | 1 h | Flips `ACTIVE` warranties past `expires_at` to `EXPIRED`. |
+| `warranty_auto_reject` | 15 min | Closes claims past `claim_deadline_at`; warranty falls back to its original timeline. |
 | `ticket_archival` | 1 h | Closes/archives stale support tickets. |
 | `crypto_payments` | 30 s | Blockchain check + auto-credit (above). |
 
+Neither warranty job carries correctness on its own. Every read derives warranty state from stored
+timestamps, so a missed run leaves a stale `status` column and nothing worse — it can never leave a
+warranty alive past its expiry. The jobs keep the persisted state honest and send notifications.
+
 `jobs/broadcast_worker.py` is driven by the broadcast flow (and resumed at boot by
-`resume_interrupted_broadcasts`), not by the scheduler. **`jobs/warranty_auto_reject.py` is written
-but not registered** — the 24h auto-reject of unanswered warranty claims does not currently run.
+`resume_interrupted_broadcasts`), not by the scheduler.
+
+### Warranty timing
+
+A warranty is something a purchase buys. `_start_warranty` is reachable only from `place_order`, and
+gift items are handed over with no order at all (`GiftItem`, migration 0015), so a free item can
+never become a claim on a replacement. `test_gift_items.py` asserts a claim creates neither.
+
+Two independent clocks, and conflating them is the bug this design exists to prevent.
+
+1. **The warranty** — `warranties.expires_at`, an absolute instant written once at purchase
+   (`starts_at + product.warranty_days`). It is the only authority on whether a warranty is alive.
+   Nothing decrements a counter, so downtime is irrelevant: a process that was dead for six hours
+   computes the same answer as one that never stopped. Filing a claim does **not** pause it.
+2. **The claim** — `claim_deadline_at`, how long staff have to answer a filed claim. Blowing
+   through it auto-closes the claim and says nothing about whether the warranty is still alive.
+
+Filing a claim (`services/warranty_service.open_claim`) sets `status=CLAIMED`, stamps the deadline,
+and freezes `claim_remaining_seconds` — the warranty time left *at that instant*. The customer-facing
+countdown shows that frozen figure; the real clock keeps running underneath it.
+
+- **`/done`** — `claim_remaining_seconds` is re-based onto the resolution moment, so the replacement
+  expires at `done_time + frozen`. The frozen figure is a **cap**, not a promise: if the original
+  `expires_at` passed while the claim sat in review, the grant is zero and the warranty is EXPIRED.
+- **`/reject`** (and auto-close) — the warranty returns to its original timeline, neither restarted
+  nor extended. Still in the future → back to ACTIVE with the same `expires_at`; already past →
+  EXPIRED. Time spent under review is never credited back.
+
+Anything user-facing calls `effective_status()` rather than reading `status` directly, because the
+expiry sweep is hourly and a warranty that lapsed ten minutes ago still stores `ACTIVE`.

@@ -12,7 +12,7 @@ from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import main_reply_keyboard
 from app.bot.states.broadcast_form import BroadcastForm
 from app.bot.states.category_form import CategoryForm
-from app.bot.states.gift_form import GiftCreateForm
+from app.bot.states.gift_form import GiftAddItemsForm, GiftCreateForm, GiftEditForm
 from app.bot.states.order_fulfill_form import OrderFulfillForm
 from app.bot.states.product_form import (
     ProductEditForm,
@@ -67,7 +67,9 @@ _ADMIN_NAV_TARGETS = frozenset({"admin_panel"})
 _ADMIN_STATE_GROUPS = (
     BroadcastForm,
     CategoryForm,
+    GiftAddItemsForm,
     GiftCreateForm,
+    GiftEditForm,
     OrderFulfillForm,
     ProductEditForm,
     ProductForm,

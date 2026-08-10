@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from datetime import UTC, datetime
+
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -55,10 +57,22 @@ class OrderRepo:
 
     async def claim_available_stock(self, product_id: int, qty: int) -> list[StockItem]:
         """SELECT ... FOR UPDATE SKIP LOCKED — the hot path that makes overselling structurally
-        impossible instead of merely unlikely under concurrent buyers."""
+        impossible instead of merely unlikely under concurrent buyers.
+
+        A credential HELD by someone whose window has already closed counts as claimable; one still
+        inside its window never does, which is what keeps a held login from reaching a second
+        customer. The caller flips the row to RESERVED while still holding the lock.
+        """
+        now = datetime.now(UTC)
         stmt = (
             select(StockItem)
-            .where(StockItem.product_id == product_id, StockItem.status == StockStatus.AVAILABLE)
+            .where(
+                StockItem.product_id == product_id,
+                or_(
+                    StockItem.status == StockStatus.AVAILABLE,
+                    and_(StockItem.status == StockStatus.HELD, StockItem.held_until <= now),
+                ),
+            )
             .limit(qty)
             .with_for_update(skip_locked=True)
         )

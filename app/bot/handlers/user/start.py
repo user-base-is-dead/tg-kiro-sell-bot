@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.main_menu import main_inline_keyboard, main_reply_keyboard
+from app.bot.keyboards.main_menu import main_inline_keyboard
+from app.bot.panel import send_reply_panel
 from app.database.models.user import User
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
@@ -53,16 +54,11 @@ async def _send_welcome(message: Message, session: AsyncSession, user: User) -> 
     locale = user.locale
     is_admin = await is_admin_user(session, user.telegram_id)
 
-    subtitle = t("welcome.subtitle", locale, name=user.first_name or "there")
-
-    logger.debug("Sending welcome message with inline keyboard")
-    await message.answer(subtitle, reply_markup=main_inline_keyboard(locale, is_admin=is_admin))
-
-    logger.debug("Sending reply keyboard (persistent bottom panel) with is_admin=%s", is_admin)
-    try:
-        reply_kb = main_reply_keyboard(locale, is_admin=is_admin)
-        logger.debug("Reply keyboard created: %d rows", len(reply_kb.keyboard) if reply_kb.keyboard else 0)
-        await message.answer(" ", reply_markup=reply_kb)
-        logger.debug("Reply keyboard sent successfully")
-    except Exception as e:
-        logger.error("Failed to send reply keyboard: %s", e, exc_info=True)
+    # The welcome message keeps the inline grid. The panel cannot share this message (Telegram
+    # rejects both markups on one send, and rejects editing a reply-keyboard message into an inline
+    # one), so it installs separately and cleans up after itself — see `send_reply_panel`.
+    await message.answer(
+        t("welcome.subtitle", locale, name=user.first_name or "there"),
+        reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
+    )
+    await send_reply_panel(message, locale, is_admin=is_admin, telegram_id=user.telegram_id)

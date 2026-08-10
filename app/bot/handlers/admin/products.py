@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -35,6 +37,8 @@ from app.utils.money import format_minor, parse_to_minor
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI
 from app.utils.text import PAD
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="admin.products")
 router.message.filter(IsAdmin())
@@ -131,19 +135,38 @@ def _list_keyboard(products: list, page: Page, *, name_like: str | None = None) 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _detail_keyboard(product) -> InlineKeyboardMarkup:
+    """One flat screen: every field is one tap from the product, not two.
+
+    There used to be an `✏️ Edit` button that opened a second screen asking "which field?" — a whole
+    extra tap and message to answer a question the buttons can just ask directly. The fields live
+    here now, paired two-per-row so the screen stays short.
+    """
+    pid = str(product.id)
     toggle_label = "🔴 Disable" if product.is_active else "🟢 Enable"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [btn("✏️ Edit", AdminProductCB(action="edit", id=str(product.id)).pack(), PRIMARY)],
-            [btn("📦 Add Stock", AdminProductCB(action="stock", id=str(product.id)).pack(), PRIMARY)],
+            [
+                btn("✏️ Name", f"pedit:nm:{pid}", PRIMARY),
+                btn("💰 Price", f"pedit:pr:{pid}", PRIMARY),
+            ],
+            [
+                btn("📝 Description", f"pedit:ds:{pid}", PRIMARY),
+                btn("🏷️ Category", f"pedit:ct:{pid}", PRIMARY),
+            ],
+            [
+                btn("🛡️ Warranty", f"pedit:wr:{pid}", PRIMARY),
+                btn("⚡ Fulfillment", f"pedit:md:{pid}", PRIMARY),
+            ],
+            [btn("🚚 Delivery info", f"pedit:dv:{pid}", PRIMARY)],
+            [btn("📦 Add Stock", AdminProductCB(action="stock", id=pid).pack(), SUCCESS)],
             [
                 btn(
                     toggle_label,
-                    AdminProductCB(action="toggle", id=str(product.id)).pack(),
+                    AdminProductCB(action="toggle", id=pid).pack(),
                     DANGER if product.is_active else SUCCESS,
                 )
             ],
-            [btn("🗑️ Delete", AdminProductCB(action="delete", id=str(product.id)).pack(), DANGER)],
+            [btn("🗑️ Delete", AdminProductCB(action="delete", id=pid).pack(), DANGER)],
             [btn("🔙 Back", AdminProductCB(action="list").pack(), DANGER)],
         ]
     )
@@ -230,7 +253,12 @@ async def list_products(
 
 
 @router.callback_query(AdminProductCB.filter(F.action == "view"))
-async def view_product(query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession) -> None:
+async def view_product(
+    query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession, state: FSMContext
+) -> None:
+    # This is the `🔙 Back` out of Add Stock and every edit prompt, so it has to drop the form state.
+    # Leaving it set is how the admin's next unrelated message silently got eaten as a stock item.
+    await state.clear()
     rendered = await _render_detail(session, int(callback_data.id))
     if rendered is None:
         await query.answer("Product not found.", show_alert=True)
@@ -240,35 +268,81 @@ async def view_product(query: CallbackQuery, callback_data: AdminProductCB, sess
     await query.answer()
 
 @router.callback_query(AdminProductCB.filter(F.action == "toggle"))
-async def toggle_product(query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession) -> None:
+async def toggle_product(
+    query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession, state: FSMContext
+) -> None:
     product = await ProductRepo(session).get_by_id(int(callback_data.id))
     if product is None:
         await query.answer("Product not found.", show_alert=True)
         return
     product.is_active = not product.is_active
     await session.flush()
-    await view_product(query, callback_data, session)
+    await view_product(query, callback_data, session, state)
 
 
 @router.callback_query(AdminProductCB.filter(F.action == "delete"))
-async def delete_product(
-    query: CallbackQuery, callback_data: AdminProductCB, state: FSMContext, session: AsyncSession
-) -> None:
+async def confirm_delete(query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession) -> None:
+    """Ask first. Delete is the one button on this screen that cannot be undone."""
     product = await ProductRepo(session).get_by_id(int(callback_data.id))
     if product is None:
         await query.answer("Product not found.", show_alert=True)
         return
+    await query.message.edit_text(
+        f"⚠️ Delete <b>{product.name}</b> permanently?\n\n"
+        "<i>Past orders keep their name, price and delivered items, and buyers keep their warranty "
+        "— only the catalog entry goes. Unsold stock for it is discarded, and any gift code that "
+        "granted it is disabled.</i>",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [btn("🗑️ Yes, delete", AdminProductCB(action="delete_ok", id=callback_data.id).pack(), DANGER)],
+                [btn("🔙 No, keep it", AdminProductCB(action="view", id=callback_data.id).pack(), PRIMARY)],
+            ]
+        ),
+    )
+    await query.answer()
+
+
+@router.callback_query(AdminProductCB.filter(F.action == "delete_ok"))
+async def delete_product(
+    query: CallbackQuery, callback_data: AdminProductCB, state: FSMContext, session: AsyncSession
+) -> None:
+    """Delete for real. `ProductRepo.delete` detaches order history first, so past orders survive.
+
+    This used to refuse outright with a "this product has order history, disable it instead" alert
+    — a dead end that left the admin to go press Disable themselves. The FK that caused it is now
+    nullable on both `order_items` and `stock_items` (migration 0013), so nothing blocks the delete.
+    The disable path below is only a last-resort net for a reference nobody anticipated: it should
+    never fire, and the error is logged loudly if it does.
+    """
+    product = await ProductRepo(session).get_by_id(int(callback_data.id))
+    if product is None:
+        await query.answer("Product not found.", show_alert=True)
+        return
+
+    name = product.name
     try:
         await ProductRepo(session).delete(product)
         await session.flush()
+        note = f"🗑️ Deleted <b>{name}</b>."
+        answer = "Deleted."
     except IntegrityError:
+        logger.exception("Unexpected reference blocked deleting product %s", callback_data.id)
         await session.rollback()
-        await query.answer("Can't delete — this product has order history. Disable it instead.", show_alert=True)
-        return
-    await query.answer("Deleted.")
+        # rollback() expires the identity map, so re-fetch before touching the row again.
+        product = await ProductRepo(session).get_by_id(int(callback_data.id))
+        if product is not None:
+            product.is_active = False
+            await session.flush()
+        note = (
+            f"⚠️ <b>{name}</b> is still referenced somewhere, so it was <b>disabled</b> "
+            "(hidden from buyers) instead of deleted. Nothing was lost."
+        )
+        answer = "Disabled instead."
+
+    await query.answer(answer)
     name_like = (await state.get_data()).get("product_filter")
     text, markup = await _render_list(session, 1, name_like=name_like)
-    await query.message.edit_text(text, reply_markup=markup)
+    await query.message.edit_text(f"{note}\n\n{text}", reply_markup=markup)
 
 
 # ---- Add Product wizard ----
@@ -608,21 +682,44 @@ async def receive_wizard_stock(
 # ---- Add Stock, from an existing product's page ----
 
 
-@router.callback_query(AdminProductCB.filter(F.action == "stock"))
-async def start_stock(query: CallbackQuery, callback_data: AdminProductCB, state: FSMContext) -> None:
-    await state.set_state(StockUploadForm.payloads)
-    await state.update_data(product_id=int(callback_data.id))
-    await query.message.edit_text(
-        "📦 <b>Add Stock</b>\n\n"
+async def _add_stock_screen(
+    session: AsyncSession, product_id: int, *, note: str = ""
+) -> tuple[str, InlineKeyboardMarkup]:
+    """The Add Stock prompt. Rendered again after every batch so the form is a loop, not a one-shot.
+
+    Stocking a product is naturally repetitive — keys arrive in batches, from different places, at
+    different times. The screen used to hand the admin back to the product page after a single
+    batch, which meant tapping `📦 Add Stock` again for every one. Now the prompt comes straight
+    back with a running total, and `🔙 Back` is the way out.
+    """
+    product = await ProductRepo(session).get_by_id(product_id)
+    name = product.name if product else "this product"
+    in_stock = await ProductRepo(session).available_stock_count(product_id)
+    return (
+        f"📦 <b>Add Stock</b> — {name}\n\n"
+        f"{note}"
+        f"In stock now: <b>{in_stock}</b>\n\n"
         "Send the stock items — licence keys or account credentials, <b>one per line</b>. "
         "Paste as many as you like in a single message; they are encrypted before they touch "
-        "the database.",
-        reply_markup=InlineKeyboardMarkup(
+        "the database.\n\n"
+        "Keep sending messages to add more, or press 🔙 Back when you're done.",
+        InlineKeyboardMarkup(
             inline_keyboard=[
-                [btn("🔙 Back", AdminProductCB(action="view", id=callback_data.id).pack(), DANGER)]
+                [btn("🔙 Back", AdminProductCB(action="view", id=str(product_id)).pack(), DANGER)]
             ]
         ),
     )
+
+
+@router.callback_query(AdminProductCB.filter(F.action == "stock"))
+async def start_stock(
+    query: CallbackQuery, callback_data: AdminProductCB, state: FSMContext, session: AsyncSession
+) -> None:
+    product_id = int(callback_data.id)
+    await state.set_state(StockUploadForm.payloads)
+    await state.update_data(product_id=product_id)
+    text, markup = await _add_stock_screen(session, product_id)
+    await query.message.edit_text(text, reply_markup=markup)
     await query.answer()
 
 
@@ -648,16 +745,18 @@ async def receive_stock(message: Message, state: FSMContext, session: AsyncSessi
             plaintext_payloads=lines,
             added_by_admin_id=user.telegram_id,
         )
-        await state.clear()
-        await session.flush()
-        rendered = await _render_detail(session, product_id)
-        if rendered is None:
-            await message.answer(f"✅ Added {count} stock items.")
-            return
-        detail, markup = rendered
-        await message.answer(f"✅ Added {count} stock item(s).\n\n{detail}", reply_markup=markup)
     except ValueError as exc:
-        await message.answer(f"❌ {exc}")
+        # Stay in the form: a rejected batch is something to retype, not a reason to walk the admin
+        # back to the product page and make them start the whole flow again.
+        await message.answer(f"❌ {exc}\n\nSend the items again, or press 🔙 Back to stop.")
+        return
+
+    await session.flush()
+    # The state deliberately survives, so the very next message adds another batch.
+    text, markup = await _add_stock_screen(
+        session, product_id, note=f"✅ Added <b>{count}</b> item(s).\n"
+    )
+    await message.answer(text, reply_markup=markup)
 
 
 # ---- Search ----
@@ -779,17 +878,12 @@ async def export_products(query: CallbackQuery, session: AsyncSession) -> None:
 
 
 @router.callback_query(AdminProductCB.filter(F.action == "edit"))
-async def choose_edit_field(query: CallbackQuery, callback_data: AdminProductCB) -> None:
-    rows = [
-        [btn(f"✏️ {label}", f"pedit:{code}:{callback_data.id}", PRIMARY)]
-        for code, label in _EDIT_FIELDS.items()
-    ]
-    rows.append([btn("🔙 Back", AdminProductCB(action="view", id=callback_data.id).pack(), DANGER)])
-    await query.message.edit_text(
-        "✏️ <b>Edit product</b>\n\nWhich field? The change saves as soon as you answer.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-    await query.answer()
+async def choose_edit_field(
+    query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession, state: FSMContext
+) -> None:
+    """Kept only so older messages still in a chat don't dead-end on a stale `edit` button. The
+    field picker itself is gone — the fields are on the product screen now."""
+    await view_product(query, callback_data, session, state)
 
 
 _EDIT_PROMPTS = {
@@ -805,7 +899,7 @@ async def prompt_edit_field(query: CallbackQuery, state: FSMContext, session: As
     _, code, product_id = query.data.split(":", 2)
 
     def _cancel_row() -> list[InlineKeyboardButton]:
-        return [btn("🔙 Back", AdminProductCB(action="edit", id=product_id).pack(), DANGER)]
+        return [btn("🔙 Back", AdminProductCB(action="view", id=product_id).pack(), DANGER)]
 
     if code == "md":
         await query.message.edit_text(

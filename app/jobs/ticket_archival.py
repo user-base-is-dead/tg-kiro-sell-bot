@@ -10,18 +10,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.database.models.support import SupportTicket, TicketMessage, TicketStatus
 from app.database.session import session_scope
 from app.services.support_service import announce_closure
+from app.utils.time import as_utc
 
 logger = logging.getLogger(__name__)
 
 IDLE_AUTO_CLOSE_AFTER = timedelta(hours=24)
 
 _LIVE_STATUSES = (TicketStatus.OPEN, TicketStatus.PENDING, TicketStatus.RESOLVED)
-
-
-def _as_utc(value: datetime) -> datetime:
-    """SQLite hands back naive datetimes for DateTime(timezone=True) columns, Postgres hands back
-    aware ones. Comparing the two raises, so everything is normalised before it is compared."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 async def archive_stale_tickets(sessionmaker: async_sessionmaker, bot: Bot | None = None) -> int:
@@ -49,7 +44,7 @@ async def archive_stale_tickets(sessionmaker: async_sessionmaker, bot: Bot | Non
         for ticket, last_at in result.all():
             # A ticket with no messages at all falls back to when it was opened, so it can still
             # age out instead of living forever.
-            if _as_utc(last_at or ticket.opened_at) >= cutoff:
+            if as_utc(last_at or ticket.opened_at) >= cutoff:
                 continue
             ticket.status = TicketStatus.CLOSED
             ticket.closed_at = now

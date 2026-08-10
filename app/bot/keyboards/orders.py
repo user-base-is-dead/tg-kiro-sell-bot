@@ -9,7 +9,9 @@ from app.database.models.order import Order
 from app.utils.money import format_minor
 from app.utils.pagination import Page
 
-_STATUS_EMOJI = {
+# Public because the order *detail* screen heads its card with the same badge the list row carries —
+# one map, so a status can never wear two different colors on two screens.
+STATUS_EMOJI = {
     "PENDING": "🟡",
     "PROCESSING": "🔵",
     "COMPLETED": "🟢",
@@ -30,7 +32,7 @@ _STATUS_STYLE: dict[str, str | None] = {
 def order_history_list(orders: list[Order], page: Page, locale: str):
     rows: list[list[InlineKeyboardButton]] = []
     for o in orders:
-        emoji = _STATUS_EMOJI.get(o.status.value, "•")
+        emoji = STATUS_EMOJI.get(o.status.value, "•")
         label = f"{emoji} {o.order_number} — {format_minor(o.total_minor, o.currency)}"
         style = _STATUS_STYLE.get(o.status.value, PRIMARY)
         rows.append([btn(label, OrderCB(action="view", order_id=o.id).pack(), style)])

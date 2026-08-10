@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import enum
+from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, BigIntPKMixin, TimestampMixin
@@ -11,6 +12,10 @@ from app.database.base import Base, BigIntPKMixin, TimestampMixin
 class ProductStatus(str, enum.Enum):
     IN_STOCK = "IN_STOCK"
     LOW_STOCK = "LOW_STOCK"
+    # Every remaining credential is held by someone mid-checkout. Distinct from OUT_OF_STOCK on
+    # purpose: those holds expire, so this state un-does itself within five minutes and the buyer
+    # should be told to wait rather than turned away.
+    ON_HOLD = "ON_HOLD"
     OUT_OF_STOCK = "OUT_OF_STOCK"
     COMING_SOON = "COMING_SOON"
     DISABLED = "DISABLED"
@@ -22,7 +27,17 @@ class FulfillmentMode(str, enum.Enum):
 
 
 class StockStatus(str, enum.Enum):
+    """The lifecycle of ONE credential. Availability is counted per credential, never per product.
+
+    AVAILABLE → HELD  — a buyer picked a payment method; this exact credential is theirs for 5 min
+    HELD  → AVAILABLE — they backed out, or the hold expired without payment
+    HELD  → RESERVED  — payment is being taken, inside the order transaction
+    RESERVED → DELIVERED — handed over; permanently that buyer's
+    RESERVED → AVAILABLE — the order was cancelled/refunded before delivery
+    """
+
     AVAILABLE = "AVAILABLE"
+    HELD = "HELD"
     RESERVED = "RESERVED"
     DELIVERED = "DELIVERED"
     VOID = "VOID"
@@ -80,7 +95,10 @@ class Product(BigIntPKMixin, TimestampMixin, Base):
 class StockItem(BigIntPKMixin, Base):
     __tablename__ = "stock_items"
 
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    # Nullable for the same reason as `OrderItem.product_id`: deleting a product must not destroy an
+    # already-delivered payload, which the buyer can still be shown under warranty. Unsold rows are
+    # deleted outright with the product — only sold ones survive, detached.
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), index=True)
     payload: Mapped[str] = mapped_column(String(4096))  # encrypted at rest via PayloadCipher
     status: Mapped[StockStatus] = mapped_column(
         Enum(StockStatus, name="stock_status"), default=StockStatus.AVAILABLE
@@ -89,6 +107,18 @@ class StockItem(BigIntPKMixin, Base):
     batch_id: Mapped[str | None] = mapped_column(String(64))
     added_by_admin_id: Mapped[int | None] = mapped_column(BigInteger)
 
-    product: Mapped["Product"] = relationship(back_populates="stock_items")
+    # The reservation lives on the credential itself rather than in a side table, so there is
+    # exactly one row — and therefore one source of truth — for "who has this, until when". A hold
+    # kept anywhere else can disagree with `status`, and a credential that is HELD in one place and
+    # AVAILABLE in another is precisely how the same login reaches two customers.
+    held_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    held_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    held_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (Index("ix_stock_items_product_status", "product_id", "status"),)
+    product: Mapped["Product | None"] = relationship(back_populates="stock_items")
+
+    __table_args__ = (
+        Index("ix_stock_items_product_status", "product_id", "status"),
+        # The expiry sweep is `WHERE status = 'HELD' AND held_until <= now`, on every tick.
+        Index("ix_stock_items_status_held_until", "status", "held_until"),
+    )

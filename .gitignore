@@ -16,6 +16,12 @@ venv/
 # local sqlite db
 *.db
 *.db-journal
+# Timestamped backups the migration scripts leave behind — `*.db` misses these because the suffix
+# lands after the extension (local.db.bak-20260810-054650).
+*.db.bak-*
+
+# scratch output
+out*.txt
 
 # logs
 *.log

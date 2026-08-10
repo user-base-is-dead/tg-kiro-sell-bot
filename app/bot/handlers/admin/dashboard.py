@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminMiscCB
+from app.bot.callbacks import AdminMiscCB, NavCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.keyboards.common import with_nav
 from app.core.config import get_settings
+from app.database.models.user import User
 from app.services.stats_service import get_dashboard_stats
 from app.utils.money import format_minor
 
@@ -16,10 +18,10 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
-async def _render(session: AsyncSession) -> str:
+async def _render(session: AsyncSession) -> tuple[str, InlineKeyboardMarkup]:
     s = await get_dashboard_stats(session)
     currency = get_settings().default_currency
-    return (
+    text = (
         "📊 <b>DASHBOARD</b>\n\n"
         f"👥 Total Users: {s.total_users}\n"
         f"📦 Total Products: {s.total_products}\n"
@@ -35,14 +37,18 @@ async def _render(session: AsyncSession) -> str:
         f"📆 This week: {format_minor(s.revenue_week_minor, currency)}\n"
         f"🗓️ This month: {format_minor(s.revenue_month_minor, currency)}"
     )
+    markup = with_nav([], "en", back_target="admin_panel", home=False)
+    return text, markup
 
 
 @router.message(Command("dashboard"))
 async def show_dashboard(message, session: AsyncSession) -> None:
-    await message.answer(await _render(session))
+    text, markup = await _render(session)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(AdminMiscCB.filter(F.action == "dashboard"))
 async def show_dashboard_cb(query: CallbackQuery, session: AsyncSession) -> None:
-    await query.message.edit_text(await _render(session))
+    text, markup = await _render(session)
+    await query.message.edit_text(text, reply_markup=markup)
     await query.answer()

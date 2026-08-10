@@ -13,7 +13,7 @@ from app.database.models.wallet import TxnType
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.user_repo import UserRepo
-from app.services import order_hold_service, referral_service, wallet_service
+from app.services import referral_service, stock_hold_service, wallet_service
 from app.utils.errors import UserError
 
 IDEMPOTENCY_WINDOW_SECONDS = 15
@@ -29,6 +29,74 @@ class PlacedOrder:
     order: Order
     order_item: OrderItem
     delivered_payload: str | None  # plaintext, only for AUTO — shown once, never re-fetchable
+
+
+async def _claim_stock(
+    session: AsyncSession,
+    order_repo: OrderRepo,
+    product: Product,
+    order_item: OrderItem,
+    *,
+    user_id: int | None = None,
+):
+    """Reserve ONE credential for `order_item`, or raise if none can be had.
+
+    The buyer's own held credential comes first: they were promised *that* login when they picked a
+    payment method, and `claim_held` flips it HELD → RESERVED atomically, so if the expiry sweep got
+    there first this falls through rather than delivering a credential somebody else may now hold.
+
+    Only then does it take a fresh AVAILABLE one — the path for gift orders and for a buyer whose
+    hold lapsed while a credential happens to be free again. Either way the shelf is consulted
+    before the wallet is, so an empty product never costs anyone money.
+    """
+    if user_id is not None:
+        held = await stock_hold_service.get_hold(session, product.id, user_id)
+        if held is not None and await stock_hold_service.claim_held(session, held.id, user_id):
+            held.order_item_id = order_item.id
+            await session.flush()
+            return held
+
+    claimed = await order_repo.claim_available_stock(product.id, 1)
+    if not claimed:
+        raise UserError("errors.out_of_stock")
+    stock_item = claimed[0]
+    stock_item.status = StockStatus.RESERVED
+    stock_item.order_item_id = order_item.id
+    await session.flush()
+    return stock_item
+
+
+def _deliver_auto(session: AsyncSession, order: Order, order_item: OrderItem, stock_item, now: datetime) -> str:
+    """Hand over a reserved stock item and close the order. Returns the plaintext payload, which is
+    shown to the user once and never persisted a second time — the ciphertext on the stock item
+    stays the only stored copy."""
+    stock_item.status = StockStatus.DELIVERED
+    payload = get_cipher().decrypt(stock_item.payload)
+    session.add(Delivery(order_item_id=order_item.id, mode="AUTO", payload=None, delivered_at=now))
+    order.status = OrderStatus.COMPLETED
+    order.completed_at = now
+    return payload
+
+
+def _start_warranty(session: AsyncSession, product: Product, order_item: OrderItem, user_id: int, now: datetime) -> None:
+    """Only ever called from `place_order` — a warranty is something a purchase buys.
+
+    Giveaways deliberately have no path here. Gift items are their own stock (`GiftItem`, migration
+    0015) and are handed over without an order at all, so there is nothing to attach a warranty to
+    and no way for a free item to end up entitled to a replacement. A `place_gift_order` used to
+    exist that created an order, a delivery *and* a warranty for a catalog product handed out by a
+    code; it was already unreachable once the PRODUCT gift kind was dropped, and it is gone.
+    """
+    if product.warranty_days > 0:
+        session.add(
+            Warranty(
+                order_item_id=order_item.id,
+                user_id=user_id,
+                starts_at=now,
+                expires_at=now + timedelta(days=product.warranty_days),
+                status=WarrantyStatus.ACTIVE,
+            )
+        )
 
 
 async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -> PlacedOrder:
@@ -62,12 +130,6 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
     session.add(order)
     await session.flush()
 
-    # Link existing hold to this order
-    hold = await order_hold_service.get_hold_for_product(session, product.id, user_id)
-    if hold is not None:
-        hold.order_id = order.id
-        await session.flush()
-
     order_item = OrderItem(
         order_id=order.id,
         product_id=product.id,
@@ -82,13 +144,9 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
     delivered_payload: str | None = None
 
     if product.fulfillment_mode == FulfillmentMode.AUTO:
-        claimed = await order_repo.claim_available_stock(product.id, 1)
-        if not claimed:
-            raise UserError("errors.out_of_stock")
-        stock_item = claimed[0]
-        stock_item.status = StockStatus.RESERVED
-        stock_item.order_item_id = order_item.id
-        await session.flush()
+        # Stock first, then payment, then delivery: an empty shelf must not cost the buyer money,
+        # and a failed debit must not hand over the goods.
+        stock_item = await _claim_stock(session, order_repo, product, order_item, user_id=user_id)
 
         debit_txn = await wallet_service.debit(
             session,
@@ -102,19 +160,7 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
         )
         order.payment_txn_id = debit_txn.id
 
-        stock_item.status = StockStatus.DELIVERED
-        delivered_payload = get_cipher().decrypt(stock_item.payload)
-
-        session.add(
-            Delivery(
-                order_item_id=order_item.id,
-                mode="AUTO",
-                payload=None,  # plaintext never persisted a second time; stock_item already holds ciphertext
-                delivered_at=now,
-            )
-        )
-        order.status = OrderStatus.COMPLETED
-        order.completed_at = now
+        delivered_payload = _deliver_auto(session, order, order_item, stock_item, now)
     else:
         debit_txn = await wallet_service.debit(
             session,
@@ -129,16 +175,7 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
         order.payment_txn_id = debit_txn.id
         order.status = OrderStatus.PROCESSING
 
-    if product.warranty_days > 0:
-        session.add(
-            Warranty(
-                order_item_id=order_item.id,
-                user_id=user_id,
-                starts_at=now,
-                expires_at=now + timedelta(days=product.warranty_days),
-                status=WarrantyStatus.ACTIVE,
-            )
-        )
+    _start_warranty(session, product, order_item, user_id, now)
 
     await session.flush()
 

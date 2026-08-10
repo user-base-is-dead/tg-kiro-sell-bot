@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -18,7 +19,16 @@ logger = logging.getLogger(__name__)
 SEND_DELAY_SECONDS = 0.05  # ~20 msg/sec, well under Telegram's global cap
 
 
-async def create_broadcast(session: AsyncSession, *, admin_id: int, title: str, body: str) -> Broadcast:
+async def create_broadcast(
+    session: AsyncSession,
+    *,
+    admin_id: int,
+    title: str,
+    body: str,
+    parts: list[dict] | None = None,
+) -> Broadcast:
+    """`parts` are {"chat_id", "message_id"} coordinates of the messages the admin composed. When
+    given, delivery copies those messages; when omitted, `body` is sent as plain text."""
     result = await session.execute(select(User).where(User.status == UserStatus.ACTIVE, User.chat_id.is_not(None)))
     targets = list(result.scalars().all())
 
@@ -26,6 +36,7 @@ async def create_broadcast(session: AsyncSession, *, admin_id: int, title: str, 
         created_by_admin_id=admin_id,
         title=title,
         body=body,
+        parts_json=json.dumps(parts) if parts else None,
         status=BroadcastStatus.RUNNING,
         total_targets=len(targets),
         started_at=datetime.now(UTC),
@@ -36,6 +47,26 @@ async def create_broadcast(session: AsyncSession, *, admin_id: int, title: str, 
     session.add_all([BroadcastDelivery(broadcast_id=broadcast.id, user_id=u.id, status=DeliveryStatus.PENDING) for u in targets])
     await session.flush()
     return broadcast
+
+
+async def _deliver(bot: Bot, chat_id: int, broadcast: Broadcast, parts: list[dict] | None) -> None:
+    """Send one broadcast to one user.
+
+    `copy_message` is what makes "send whatever you composed" work: it reproduces the admin's
+    original message — text, photo, video, audio, document, voice, sticker, album item — without a
+    "forwarded from" header and without re-uploading the file. Each part is copied in order, so the
+    user receives the same sequence the admin wrote.
+    """
+    if not parts:
+        await bot.send_message(chat_id, broadcast.body)
+        return
+
+    for part in parts:
+        await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=part["chat_id"],
+            message_id=part["message_id"],
+        )
 
 
 async def run_worker(bot: Bot, database_url: str, broadcast_id: int) -> None:
@@ -66,9 +97,11 @@ async def run_worker(bot: Bot, database_url: str, broadcast_id: int) -> None:
                     await session.flush()
                     return
 
+                parts = json.loads(broadcast.parts_json) if broadcast.parts_json else None
+
                 for delivery, target_user in batch:
                     try:
-                        await bot.send_message(target_user.chat_id, broadcast.body)
+                        await _deliver(bot, target_user.chat_id, broadcast, parts)
                         delivery.status = DeliveryStatus.SENT
                         broadcast.sent_count += 1
                     except TelegramForbiddenError:

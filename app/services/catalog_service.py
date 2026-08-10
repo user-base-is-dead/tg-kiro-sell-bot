@@ -11,6 +11,7 @@ from app.database.models.catalog import FulfillmentMode, Product, ProductStatus
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.stock_repo import StockRepo
+from app.services import stock_hold_service
 
 
 def slugify(name: str) -> str:
@@ -38,13 +39,20 @@ async def compute_display_status(session: AsyncSession, product: Product) -> Pro
         return ProductView(product, 0, ProductStatus.IN_STOCK)
 
     available = await ProductRepo(session).available_stock_count(product.id)
-    if available <= 0:
-        status = ProductStatus.OUT_OF_STOCK
-    elif available <= product.low_stock_threshold:
-        status = ProductStatus.LOW_STOCK
-    else:
-        status = ProductStatus.IN_STOCK
-    return ProductView(product, available, status)
+    if available > 0:
+        status = (
+            ProductStatus.LOW_STOCK
+            if available <= product.low_stock_threshold
+            else ProductStatus.IN_STOCK
+        )
+        return ProductView(product, available, status)
+
+    # Nothing free — but "someone is mid-checkout on the last one" and "they are all sold" are
+    # different facts for the shopper. The first un-does itself within the hold window, so they are
+    # told to wait rather than turned away.
+    held = await stock_hold_service.held_count(session, product.id)
+    status = ProductStatus.ON_HOLD if held > 0 else ProductStatus.OUT_OF_STOCK
+    return ProductView(product, 0, status)
 
 
 async def create_category(

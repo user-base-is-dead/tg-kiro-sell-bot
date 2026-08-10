@@ -6,8 +6,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminMiscCB
+from app.bot.callbacks import AdminMiscCB, NavCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.keyboards.common import with_nav
 from app.bot.keyboards.styles import PRIMARY, btn
 from app.bot.states.settings_form import SettingsForm
 from app.core.config import get_settings
@@ -20,21 +21,27 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
-async def _render(session: AsyncSession) -> tuple[str, InlineKeyboardMarkup]:
+async def _render(session: AsyncSession, locale: str = "en") -> tuple[str, InlineKeyboardMarkup]:
     reward = await settings_service.get_setting(session, "referral_reward_minor")
     currency = get_settings().default_currency
-    text = f"⚙️ <b>SETTINGS</b>\n\n🔗 Referral reward: {format_minor(reward, currency)}"
-    markup = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [btn("✏️ Edit referral reward", "editrefreward", PRIMARY)],
-        ]
+    text = (
+        "⚙️ <b>SETTINGS</b>\n\n"
+        "Manage bot-wide configuration and incentive programs.\n\n"
+        f"🔗 <b>Referral Reward</b>\n"
+        f"Amount credited to a user for each qualified referral.\n"
+        f"Current: {format_minor(reward, currency)}\n\n"
+        "Use the buttons below to modify settings."
     )
+    rows = [
+        [btn("✏️ Edit referral reward", "editrefreward", PRIMARY)],
+    ]
+    markup = with_nav(rows, locale, back_target="admin_panel", home=False)
     return text, markup
 
 
 @router.callback_query(AdminMiscCB.filter(F.action == "settings"))
-async def show_settings(query: CallbackQuery, session: AsyncSession) -> None:
-    text, markup = await _render(session)
+async def show_settings(query: CallbackQuery, session: AsyncSession, user: User) -> None:
+    text, markup = await _render(session, user.locale)
     await query.message.edit_text(text, reply_markup=markup)
     await query.answer()
 

@@ -10,6 +10,7 @@ from app.database.models.crypto import CryptoPayment
 from app.database.models.wallet import TxnType
 from app.services.payments.blockchain_monitor import BlockchainMonitor
 from app.services import wallet_service
+from app.utils.time import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
             matches = []
             for payment_id, payment in pending.items():
                 # Skip if payment has expired
-                if datetime.now(UTC) > payment.created_at + timedelta(minutes=15):
+                if payment.created_at and datetime.now(UTC) > as_utc(payment.created_at) + timedelta(minutes=15):
                     payment.status = "EXPIRED"
                     await session.flush()
                     continue
@@ -53,7 +54,9 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                     continue
 
                 # Verify transfer happened after payment was created (allow 60s buffer)
-                if tx["timestamp"] and tx["timestamp"] < payment.created_at.timestamp() - 60:
+                # `.timestamp()` on a naive datetime would read it as local time, shifting the
+                # window by the host's UTC offset — hence as_utc first.
+                if payment.created_at and tx["timestamp"] and tx["timestamp"] < as_utc(payment.created_at).timestamp() - 60:
                     continue
 
                 matches.append((payment_id, payment))

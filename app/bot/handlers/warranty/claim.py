@@ -1,101 +1,116 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import NavCB
 from app.bot.keyboards.common import back_keyboard
-from app.database.models.order import WarrantyStatus
-from app.database.repositories.warranty_repo import WarrantyRepo
-from app.database.repositories.support_repo import SupportRepo
+from app.core.config import get_settings
+from app.database.models.order import Warranty, WarrantyStatus
 from app.database.models.user import User
+from app.database.repositories.warranty_repo import WarrantyRepo
+from app.services.support_service import create_ticket
+from app.services.warranty_service import CLAIM_GRACE, format_duration, is_expired, now_utc, open_claim
 from app.utils.money import format_minor
+from app.utils.time import as_utc
 
 router = Router(name="warranty.claim")
 
+NO_WARRANTY_MSG = "This product does not come with a warranty."
 
-async def _create_warranty_claim_ticket(
-    session: AsyncSession, warranty_id: int, user_id: int, user: User
-) -> int | None:
-    """Creates a support ticket for warranty claim with all product details."""
-    warranty_repo = WarrantyRepo(session)
-    warranty = await warranty_repo.get_by_id(warranty_id)
-    if warranty is None:
-        return None
 
-    support_repo = SupportRepo(session)
-
-    subject = f"Warranty Claim - Order #{warranty.order_item.order.order_number}"
-    body = (
-        f"Product: {warranty.order_item.product_name}\n"
-        f"Price: {format_minor(warranty.order_item.unit_price_minor, warranty.order_item.order.currency)}\n"
-        f"Warranty Start: {warranty.starts_at.strftime('%Y-%m-%d %H:%M')}\n"
-        f"Warranty Expires: {warranty.expires_at.strftime('%Y-%m-%d %H:%M')}\n"
-        f"Purchase Date: {warranty.order_item.order.placed_at.strftime('%Y-%m-%d %H:%M') if warranty.order_item.order.placed_at else 'N/A'}\n\n"
-        f"User: {user.first_name or 'N/A'}\n"
-        f"Username: @{user.username or 'N/A'}"
+def _claim_subject(warranty: Warranty) -> str:
+    """The opening message of the claim thread. Support needs the two warranty timestamps in front
+    of them, because whether `/done` pays anything out depends entirely on the expiry."""
+    item = warranty.order_item
+    order = item.order
+    return (
+        f"Warranty claim — {item.product_name}\n\n"
+        f"Order: {order.order_number}\n"
+        f"Price: {format_minor(item.unit_price_minor, order.currency)}\n"
+        f"Warranty started: {as_utc(warranty.starts_at):%Y-%m-%d %H:%M} UTC\n"
+        f"Warranty expires: {as_utc(warranty.expires_at):%Y-%m-%d %H:%M} UTC\n"
+        f"Warranty id: {warranty.id}\n\n"
+        f"Resolve with /done {warranty.id} or /reject {warranty.id} [reason]."
     )
 
-    now = datetime.now(UTC)
-    ticket = await support_repo.create_ticket(
-        referrer_user_id=user_id,
-        subject=subject,
-        category="Warranty Claim",
-        support_group_id=0,
-        reached_staff=False,
-    )
 
-    return ticket.id if ticket else None
+@router.callback_query(F.data.startswith("wclaim:"))
+async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User) -> None:
+    """File a warranty claim.
 
-
-@router.callback_query(NavCB.filter(F.target == "claim_warranty"))
-async def claim_warranty(query: CallbackQuery, callback_data: NavCB, session: AsyncSession, user: User) -> None:
-    """Handle warranty claim request."""
+    The button is shown for every purchased item, so most of this handler is telling the customer
+    why a particular item cannot be claimed. Only an ACTIVE warranty that has not yet passed its
+    stored `expires_at` gets a ticket.
+    """
     if not query.message:
         return
 
-    warranty_id = int(callback_data.data or 0) if callback_data.data else 0
-    if warranty_id == 0:
-        await query.answer("Invalid warranty.", show_alert=True)
+    warranty_id = int(query.data.split(":")[1])
+    repo = WarrantyRepo(session)
+    warranty = await repo.get_by_id(warranty_id)
+
+    if warranty is None or warranty.user_id != user.id:
+        await query.answer("Warranty not found.", show_alert=True)
         return
 
-    warranty_repo = WarrantyRepo(session)
-    warranty = await warranty_repo.get_by_id(warranty_id)
+    item = warranty.order_item
+    if item is not None and item.warranty_days <= 0:
+        await query.answer(NO_WARRANTY_MSG, show_alert=True)
+        return
 
-    if warranty is None or warranty.status != "ACTIVE":
+    if warranty.status is WarrantyStatus.CLAIMED:
+        await query.answer("A claim for this item is already under review.", show_alert=True)
+        return
+
+    if warranty.status is not WarrantyStatus.ACTIVE:
         await query.answer("This warranty is no longer active.", show_alert=True)
         return
 
-    now = datetime.now(UTC)
-    if now > warranty.expires_at:
+    now = now_utc()
+    # Checked against the stored instant rather than the stored status, because the hourly expiry
+    # job may not have run yet — a warranty that lapsed four minutes ago is lapsed, not claimable.
+    if is_expired(warranty, now):
         warranty.status = WarrantyStatus.EXPIRED
         await session.flush()
-        await query.answer("Warranty period has expired.", show_alert=True)
+        await query.answer("This warranty has expired.", show_alert=True)
         return
 
-    ticket_id = await _create_warranty_claim_ticket(session, warranty.id, user.id, user)
-    if ticket_id is None:
-        await query.answer("Failed to create claim. Try again later.", show_alert=True)
-        return
+    remaining = format_duration(int((as_utc(warranty.expires_at) - now).total_seconds()))
 
-    warranty.status = WarrantyStatus.CLAIMED
-    warranty.claim_started_at = now
-    warranty.claim_ticket_id = ticket_id
+    ticket, reached_staff = await create_ticket(
+        query.bot,
+        session,
+        user=user,
+        category="Warranty Claim",
+        subject=_claim_subject(warranty),
+        support_group_id=get_settings().support_group_id,
+    )
+
+    open_claim(warranty, ticket_id=ticket.id, at=now)
     await session.flush()
+
+    grace_hours = int(CLAIM_GRACE.total_seconds() // 3600)
+    delivery_note = (
+        "⏱️ Our team will respond within "
+        f"{grace_hours} hours. If nobody responds in time the claim is closed automatically and "
+        "your warranty simply carries on from where it stands."
+        if reached_staff
+        else "⚠️ We couldn't reach the support team automatically — please contact Customer Support "
+        "with your ticket number."
+    )
 
     text = (
         "✅ <b>Warranty Claim Submitted</b>\n\n"
-        "Your warranty claim has been received and assigned to our support team.\n\n"
-        "📋 <b>Claim Details:</b>\n"
-        f"Product: {warranty.order_item.product_name}\n"
-        f"Warranty expires: {warranty.expires_at.strftime('%Y-%m-%d %H:%M')}\n"
-        f"Status: Pending Review\n\n"
-        "⏱️ You will receive a response within 24 hours.\n"
-        "If no response is received within 24 hours, your claim will be auto-rejected. "
-        "In that case, please contact Customer Support."
+        f"🎫 Ticket: <code>{ticket.ticket_number}</code>\n"
+        f"📦 Product: {warranty.order_item.product_name}\n"
+        f"⏱️ Warranty time held for you: <b>{remaining}</b>\n"
+        f"⏳ Original expiry: {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC\n"
+        "📋 Status: Under review\n\n"
+        f"{delivery_note}\n\n"
+        "ℹ️ If we replace the item, the time above is added to the replacement from the moment it's "
+        "handed over. Note that the original warranty period keeps running while we review, so "
+        "please don't wait if it's close to expiring."
     )
 
     await query.message.edit_text(text, reply_markup=back_keyboard(user.locale))
