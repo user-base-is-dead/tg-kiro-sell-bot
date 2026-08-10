@@ -108,6 +108,12 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
     if product is None or not product.is_active or product.status.value in ("COMING_SOON", "DISABLED"):
         raise UserError("errors.product_unavailable")
 
+    # A hand-set count of zero closes the product to buyers even while credentials sit on the
+    # shelf. It has to be checked here rather than left to _claim_stock, which would happily hand
+    # one of those credentials over.
+    if product.manual_stock is not None and product.manual_stock <= 0:
+        raise UserError("errors.out_of_stock")
+
     idempotency_key = checkout_idempotency_key(user_id, product_id)
     order_repo = OrderRepo(session)
     existing = await order_repo.get_by_idempotency_key(idempotency_key)
@@ -143,37 +149,42 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
 
     delivered_payload: str | None = None
 
+    # Stock first, then payment, then delivery: an empty shelf must not cost the buyer money, and a
+    # failed debit must not hand over the goods.
+    stock_item = None
     if product.fulfillment_mode == FulfillmentMode.AUTO:
-        # Stock first, then payment, then delivery: an empty shelf must not cost the buyer money,
-        # and a failed debit must not hand over the goods.
-        stock_item = await _claim_stock(session, order_repo, product, order_item, user_id=user_id)
+        try:
+            stock_item = await _claim_stock(session, order_repo, product, order_item, user_id=user_id)
+        except UserError:
+            # No credential free. That is only the end of the sale when the credential pool is what
+            # defines availability — under a hand-set count the admin has promised units beyond the
+            # pool, so this one is sold and fulfilled by hand instead. The guard above already
+            # rejected the case where the override itself has run out.
+            if product.manual_stock is None:
+                raise
 
-        debit_txn = await wallet_service.debit(
-            session,
-            user_id=user_id,
-            amount_minor=product.price_minor,
-            currency=product.currency,
-            type_=TxnType.PURCHASE,
-            idempotency_key=idempotency_key,
-            ref_type="order",
-            ref_id=order.id,
-        )
-        order.payment_txn_id = debit_txn.id
+    debit_txn = await wallet_service.debit(
+        session,
+        user_id=user_id,
+        amount_minor=product.price_minor,
+        currency=product.currency,
+        type_=TxnType.PURCHASE,
+        idempotency_key=idempotency_key,
+        ref_type="order",
+        ref_id=order.id,
+    )
+    order.payment_txn_id = debit_txn.id
 
+    if stock_item is not None:
         delivered_payload = _deliver_auto(session, order, order_item, stock_item, now)
     else:
-        debit_txn = await wallet_service.debit(
-            session,
-            user_id=user_id,
-            amount_minor=product.price_minor,
-            currency=product.currency,
-            type_=TxnType.PURCHASE,
-            idempotency_key=idempotency_key,
-            ref_type="order",
-            ref_id=order.id,
-        )
-        order.payment_txn_id = debit_txn.id
         order.status = OrderStatus.PROCESSING
+
+    # The override is a counter, not a label: whatever the sale cost the credential pool, it also
+    # costs one unit of the number the admin typed, or the storefront would keep advertising a
+    # count that no longer exists.
+    if product.manual_stock is not None:
+        product.manual_stock = max(0, product.manual_stock - 1)
 
     _start_warranty(session, product, order_item, user_id, now)
 

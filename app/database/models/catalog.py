@@ -76,6 +76,11 @@ class Product(BigIntPKMixin, TimestampMixin, Base):
     fulfillment_mode: Mapped[FulfillmentMode] = mapped_column(
         Enum(FulfillmentMode, name="fulfillment_mode"), default=FulfillmentMode.AUTO
     )
+    # Admin-set sellable count, overriding "however many credentials are loaded". NULL = no
+    # override. When set it is the number shoppers see and the number that gets decremented on
+    # every sale; the credential pool still decides *how* each order is delivered (see
+    # order_service.resolve_fulfillment).
+    manual_stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
     low_stock_threshold: Mapped[int] = mapped_column(Integer, default=3)
     image_file_id: Mapped[str | None] = mapped_column(String(256))
     thumbnail_file_id: Mapped[str | None] = mapped_column(String(256))

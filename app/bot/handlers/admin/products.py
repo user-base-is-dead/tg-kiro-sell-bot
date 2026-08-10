@@ -38,7 +38,12 @@ from app.database.models.catalog import (
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.services.announcement_service import announce_new_product, announce_restock
-from app.services.catalog_service import add_stock, compute_display_status, create_product
+from app.services.catalog_service import (
+    add_stock,
+    compute_display_status,
+    create_product,
+    resync_status as _resync_status,
+)
 from app.services.product_import import MAX_BYTES, MAX_ROWS, apply_rows, parse_csv, to_csv
 from app.utils.money import format_minor, parse_to_minor
 from app.utils.pagination import Page
@@ -64,6 +69,7 @@ _PRODUCT_STEPS: tuple[str, ...] = (
     "warranty_days",
     "delivery_info",
     "stock",
+    "stock_count",
 )
 
 _STEP_STATES = {
@@ -75,6 +81,7 @@ _STEP_STATES = {
     "warranty_days": ProductForm.warranty_days,
     "delivery_info": ProductForm.delivery_info,
     "stock": ProductForm.stock,
+    "stock_count": ProductForm.stock_count,
 }
 
 _TOTAL_STEPS = len(_PRODUCT_STEPS)
@@ -88,7 +95,49 @@ _EDIT_FIELDS: dict[str, str] = {
     "md": "Fulfillment mode",
     "ct": "Category",
     "dv": "Delivery info",
+    "st": "Stock count",
 }
+
+# Said once, shown in both the wizard and the edit screen — the rule is subtle enough that it has
+# to be spelled out where the number is actually typed, and two different explanations of the same
+# rule is how the two screens start disagreeing.
+_STOCK_COUNT_HELP = (
+    "How many are on sale?\n\n"
+    "Send a number to set it by hand, or leave it automatic and the store will simply count the "
+    "credentials you loaded.\n\n"
+    "A hand-set number can go <b>above</b> the credential count: buyers keep getting a credential "
+    "auto-delivered while any are left, and the units beyond that land in your <b>pending "
+    "fulfilment</b> queue to hand over yourself. <code>0</code> closes the product to buyers "
+    "without disabling it."
+)
+
+
+def _parse_stock_count(raw: str) -> int | None:
+    """A whole count of 0 or more, or None if that isn't what was typed.
+
+    Deliberately strict: "10 keys" or "-3" are rejected rather than coerced, because every one of
+    those guesses would silently put a wrong number in front of buyers.
+    """
+    text = raw.strip()
+    return int(text) if text.isdigit() else None
+
+
+def _manual_stock_tail(manual_stock: int, credentials: int) -> str:
+    """What a hand-set count actually means for this product, in the admin's terms."""
+    if manual_stock == 0:
+        return "🔴 Stock set to <b>0</b> — shows OUT OF STOCK and takes no orders."
+    beyond = manual_stock - credentials
+    if beyond > 0:
+        return (
+            f"✅ <b>LIVE</b> with <b>{manual_stock}</b> on sale.\n"
+            f"⚡ First {credentials} auto-delivered from credentials, "
+            f"the other {beyond} land in your pending fulfilment queue."
+            if credentials
+            else f"✅ <b>LIVE</b> with <b>{manual_stock}</b> on sale — all hand-fulfilled, "
+            "no credentials loaded."
+        )
+    return f"✅ <b>LIVE</b> with <b>{manual_stock}</b> on sale, all auto-delivered."
+
 
 def _step_keyboard(
     step: str, *, extra: list[list[InlineKeyboardButton]] | None = None
@@ -173,7 +222,18 @@ def _detail_keyboard(product) -> InlineKeyboardMarkup:
                     PRIMARY,
                 ),
             ],
-            [btn("🚚 Delivery info", f"pedit:dv:{pid}", PRIMARY)],
+            [
+                btn("🚚 Delivery info", f"pedit:dv:{pid}", PRIMARY),
+                # Sits next to Add Stock deliberately: one loads credentials, the other decides how
+                # many the store says there are, and they are routinely changed in the same sitting.
+                btn(
+                    f"🔢 Stock count: {product.manual_stock}"
+                    if product.manual_stock is not None
+                    else "🔢 Stock count: auto",
+                    f"pedit:st:{pid}",
+                    PRIMARY,
+                ),
+            ],
             [btn("📦 Add Stock", AdminProductCB(action="stock", id=pid).pack(), SUCCESS)],
             [
                 btn(
@@ -237,11 +297,15 @@ async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, I
         found = await CategoryRepo(session).get_by_id(product.category_id)
         category = found.name if found else "—"
 
-    stock_line = (
-        "Fulfilled by hand — no stock pool"
-        if product.fulfillment_mode is FulfillmentMode.MANUAL
-        else str(view.available_stock)
-    )
+    credentials = await ProductRepo(session).available_stock_count(product.id)
+    if product.manual_stock is not None:
+        # Both numbers, always: the difference between them is exactly the set of sales that will
+        # arrive as manual fulfilment, and that is not something to make an admin work out.
+        stock_line = f"{product.manual_stock} on sale (set by hand) · {credentials} credential(s) loaded"
+    elif product.fulfillment_mode is FulfillmentMode.MANUAL:
+        stock_line = "Fulfilled by hand — no stock pool"
+    else:
+        stock_line = str(view.available_stock)
     text = (
         f"{STATUS_EMOJI[view.display_status]} <b>{product.name}</b>\n\n"
         f"Price: {format_minor(product.price_minor, product.currency)}\n"
@@ -469,6 +533,15 @@ async def _show_step(
         )
         return
 
+    if step == "stock_count":
+        await send(
+            f"{head}{_STOCK_COUNT_HELP}",
+            reply_markup=_step_keyboard(
+                "stock_count", extra=[[btn("⏭️ Auto (count credentials)", "pskip:stock_count", PRIMARY)]]
+            ),
+        )
+        return
+
 @router.callback_query(F.data == "pabort")
 async def abort_wizard(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await state.clear()
@@ -538,8 +611,17 @@ async def skip_step(query: CallbackQuery, state: FSMContext, session: AsyncSessi
         await state.update_data(delivery_info=None)
         await _after_delivery_info(query.message, state, session, admin_id=query.from_user.id)
     elif field == "stock":
+        await state.update_data(stock_lines=[])
+        await _show_step(query.message, state, "stock_count", session)
+    elif field == "stock_count":
+        data = await state.get_data()
         await _finish_product(
-            query.message, state, session, stock_lines=[], admin_id=query.from_user.id
+            query.message,
+            state,
+            session,
+            stock_lines=data.get("stock_lines", []),
+            admin_id=query.from_user.id,
+            manual_stock=None,
         )
     await query.answer()
 
@@ -551,7 +633,11 @@ async def _after_delivery_info(
     answer — they go straight to creation."""
     data = await state.get_data()
     if data.get("fulfillment_mode") is FulfillmentMode.MANUAL:
-        await _finish_product(message, state, session, stock_lines=[], admin_id=admin_id, edit=edit)
+        # Straight to the count: a MANUAL product has no credentials to paste, but "how many are
+        # there" is still a question worth answering, and it is the only way to give one a real
+        # number instead of an unbounded IN STOCK.
+        await state.update_data(stock_lines=[])
+        await _show_step(message, state, "stock_count", session, edit=edit)
         return
     await _show_step(message, state, "stock", session, edit=edit)
 
@@ -563,6 +649,7 @@ async def _finish_product(
     *,
     stock_lines: list[str],
     admin_id: int,
+    manual_stock: int | None = None,
     edit: bool = True,
 ) -> None:
     """The single exit from the wizard, whether stock was supplied, skipped, or never asked for."""
@@ -579,6 +666,7 @@ async def _finish_product(
         warranty_days=data["warranty_days"],
         delivery_info=data.get("delivery_info"),
         image_file_id=None,
+        manual_stock=manual_stock,
     )
     await session.flush()
 
@@ -593,7 +681,9 @@ async def _finish_product(
     await session.flush()
     await state.clear()
 
-    if added:
+    if manual_stock is not None:
+        tail = _manual_stock_tail(manual_stock, added)
+    elif added:
         tail = f"✅ <b>LIVE</b> with {added} stock item{'s' if added != 1 else ''}."
     elif data["fulfillment_mode"] is FulfillmentMode.MANUAL:
         tail = "✅ <b>LIVE</b> — you fulfil each order by hand, so it needs no stock."
@@ -696,9 +786,29 @@ async def receive_wizard_stock(
     if not payload:
         await message.answer("Send the stock item as a message — or press Skip.")
         return
-    lines = [payload]
+    await state.update_data(stock_lines=[payload])
+    await _show_step(message, state, "stock_count", session, edit=False)
+
+
+@router.message(ProductForm.stock_count)
+async def receive_wizard_stock_count(
+    message: Message, state: FSMContext, session: AsyncSession, user
+) -> None:
+    count = _parse_stock_count((message.text or "").strip())
+    if count is None:
+        await message.answer(
+            "Send a whole number 0 or greater — or press ⏭️ Auto to count credentials instead."
+        )
+        return
+    data = await state.get_data()
     await _finish_product(
-        message, state, session, stock_lines=lines, admin_id=user.telegram_id, edit=False
+        message,
+        state,
+        session,
+        stock_lines=data.get("stock_lines", []),
+        admin_id=user.telegram_id,
+        manual_stock=count,
+        edit=False,
     )
 
 
@@ -1072,6 +1182,34 @@ async def prompt_edit_field(query: CallbackQuery, state: FSMContext, session: As
         await query.answer()
         return
 
+    if code == "st":
+        # Typed like a text field, but with one button — "back to automatic" is not a number the
+        # admin could express by typing, so it has to be its own control.
+        product = await ProductRepo(session).get_by_id(int(product_id))
+        if product is None:
+            await query.answer("Product not found.", show_alert=True)
+            return
+        credentials = await ProductRepo(session).available_stock_count(product.id)
+        current = (
+            f"<b>{product.manual_stock}</b> (set by hand)"
+            if product.manual_stock is not None
+            else f"<b>{credentials}</b> (automatic — counting credentials)"
+        )
+        await state.set_state(ProductEditForm.value)
+        await state.update_data(edit_product_id=int(product_id), edit_field=code)
+        await query.message.edit_text(
+            f"✏️ <b>Stock count</b>\n\nCurrently: {current}\n"
+            f"Credentials loaded: <b>{credentials}</b>\n\n{_STOCK_COUNT_HELP}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [btn("⏭️ Auto (count credentials)", f"pedset:st:auto:{product_id}", PRIMARY)],
+                    _cancel_row(),
+                ]
+            ),
+        )
+        await query.answer()
+        return
+
     if code not in _EDIT_PROMPTS:
         await query.answer("Unknown field.", show_alert=True)
         return
@@ -1100,6 +1238,9 @@ async def apply_edit_button(query: CallbackQuery, session: AsyncSession) -> None
         product.warranty_days = int(value)
     elif code == "ct":
         product.category_id = None if value == "none" else int(value)
+    elif code == "st":
+        product.manual_stock = None
+    await _resync_status(session, product)
     await session.flush()
 
     rendered = await _render_detail(session, product.id)
@@ -1146,7 +1287,16 @@ async def apply_edit_typed(message: Message, state: FSMContext, session: AsyncSe
         product.description = text[:2048] or None
     elif code == "dv":
         product.delivery_info = text[:2048] or None
+    elif code == "st":
+        count = _parse_stock_count(text)
+        if count is None:
+            await message.answer(
+                "Send a whole number 0 or greater — or press ⏭️ Auto to count credentials instead."
+            )
+            return
+        product.manual_stock = count
 
+    await _resync_status(session, product)
     await session.flush()
     await state.clear()
 

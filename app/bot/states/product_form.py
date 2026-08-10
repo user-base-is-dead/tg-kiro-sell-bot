@@ -15,6 +15,9 @@ class ProductForm(StatesGroup):
     # licence keys would be a step with no possible answer. Skippable — the product is then created
     # OUT OF STOCK, which is what every product used to be.
     stock = State()
+    # The last word on "how many are there", asked of every product including MANUAL ones. Skipping
+    # leaves it unset, which means the storefront keeps counting credentials by itself.
+    stock_count = State()
     confirm = State()
 
 

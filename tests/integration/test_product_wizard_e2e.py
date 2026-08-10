@@ -91,6 +91,7 @@ async def test_the_whole_wizard_can_be_driven_to_a_live_product(
         await feed(_tap("pwar:30", bot))                # tap: warranty preset
         await feed(_tap("pskip:delivery_info", bot))    # tap: skip delivery info
         await feed(_type("KEY-1", bot))                 # type: the first licence key
+        await feed(_tap("pskip:stock_count", bot))      # tap: leave the count automatic
         await session.commit()
 
     assert await ctx.get_state() is None, "the wizard did not close"
@@ -114,8 +115,10 @@ async def test_the_whole_wizard_can_be_driven_to_a_live_product(
 async def test_a_manual_product_never_reaches_the_stock_step(
     dispatcher: Dispatcher, sqlite_sessionmaker, bot, ctx
 ) -> None:
-    """MANUAL products have no stock pool, so the wizard finishes at delivery info instead of
-    asking for keys that cannot exist."""
+    """MANUAL products have no stock pool, so the wizard skips the licence-key step entirely — it
+    still asks for a stock count, which is the one number a hand-fulfilled product can have."""
+    from app.bot.states.product_form import ProductForm
+
     admin = SimpleNamespace(telegram_id=ADMIN_ID, locale="en")
 
     async with sqlite_sessionmaker() as session:
@@ -130,9 +133,11 @@ async def test_a_manual_product_never_reaches_the_stock_step(
         await feed(_tap("pmode:manual", bot))
         await feed(_tap("pwar:0", bot))
         await feed(_tap("pskip:delivery_info", bot))
+        assert await ctx.get_state() == ProductForm.stock_count, "MANUAL must not be asked for keys"
+        await feed(_tap("pskip:stock_count", bot))
         await session.commit()
 
-    assert await ctx.get_state() is None, "MANUAL should finish, not wait for stock"
+    assert await ctx.get_state() is None, "the wizard did not close"
 
     async with sqlite_sessionmaker() as session:
         products = await ProductRepo(session).list_uncategorized(active_only=False)

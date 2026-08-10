@@ -29,9 +29,23 @@ class ProductView:
     display_status: ProductStatus
 
 
+def _threshold_status(available: int, product: Product) -> ProductStatus:
+    return ProductStatus.LOW_STOCK if available <= product.low_stock_threshold else ProductStatus.IN_STOCK
+
+
 async def compute_display_status(session: AsyncSession, product: Product) -> ProductView:
     if product.status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
         return ProductView(product, 0, product.status)
+
+    # The admin's hand-set count wins over every derived number, for both fulfilment modes. It is
+    # the one figure a human deliberately typed, so a stock query cannot be allowed to contradict
+    # it — including down to zero, which is how an override is used to close sales without
+    # disabling the product.
+    if product.manual_stock is not None:
+        available = max(0, product.manual_stock)
+        if available == 0:
+            return ProductView(product, 0, ProductStatus.OUT_OF_STOCK)
+        return ProductView(product, available, _threshold_status(available, product))
 
     if product.fulfillment_mode == FulfillmentMode.MANUAL:
         # MANUAL products aren't backed by a pre-added code pool — admin fulfills each order
@@ -40,12 +54,7 @@ async def compute_display_status(session: AsyncSession, product: Product) -> Pro
 
     available = await ProductRepo(session).available_stock_count(product.id)
     if available > 0:
-        status = (
-            ProductStatus.LOW_STOCK
-            if available <= product.low_stock_threshold
-            else ProductStatus.IN_STOCK
-        )
-        return ProductView(product, available, status)
+        return ProductView(product, available, _threshold_status(available, product))
 
     # Nothing free — but "someone is mid-checkout on the last one" and "they are all sold" are
     # different facts for the shopper. The first un-does itself within the hold window, so they are
@@ -61,9 +70,10 @@ def stock_label(view: ProductView) -> str:
     MANUAL products have no pool to count, and a COMING_SOON/DISABLED one is not for sale, so both
     would only be advertising a zero that means nothing.
     """
-    if view.product.fulfillment_mode == FulfillmentMode.MANUAL:
-        return ""
     if view.display_status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        return ""
+    # An override is a real count even on a MANUAL product — that is the whole point of typing one.
+    if view.product.manual_stock is None and view.product.fulfillment_mode == FulfillmentMode.MANUAL:
         return ""
     if view.available_stock <= 0:
         return "0 left"
@@ -97,6 +107,7 @@ async def create_product(
     warranty_days: int,
     delivery_info: str | None,
     image_file_id: str | None,
+    manual_stock: int | None = None,
     low_stock_threshold: int = 3,
 ) -> int:
     slug = slugify(name)
@@ -111,9 +122,15 @@ async def create_product(
         warranty_days=warranty_days,
         delivery_info=delivery_info,
         image_file_id=image_file_id,
+        manual_stock=manual_stock,
         low_stock_threshold=low_stock_threshold,
         status=ProductStatus.OUT_OF_STOCK,
     )
+    # A hand-set count is live the moment it is typed — leaving the row at the OUT_OF_STOCK default
+    # would make the sell-out latch fire a "sold out" announcement for a product that never sold
+    # anything.
+    if manual_stock:
+        product.status = _threshold_status(manual_stock, product)
     return product.id
 
 
@@ -129,8 +146,21 @@ async def add_stock(
     )
 
     product = await ProductRepo(session).get_by_id(product_id)
-    if product and product.status not in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
-        view = await compute_display_status(session, product)
-        product.status = view.display_status
+    if product is not None:
+        await resync_status(session, product)
 
     return count
+
+
+async def resync_status(session: AsyncSession, product: Product) -> None:
+    """Write the computed status back onto the row.
+
+    `product.status` is both a cache and the latch the sell-out announcement keys off, so anything
+    that changes availability — loading credentials, retyping the hand-set count — has to bring it
+    back in line or the store advertises a state that stopped being true. COMING_SOON and DISABLED
+    are admin decisions, never overwritten by a stock count.
+    """
+    if product.status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        return
+    view = await compute_display_status(session, product)
+    product.status = view.display_status
