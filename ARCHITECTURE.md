@@ -72,21 +72,31 @@ unstyled button — that's how styling drifts back out of a screen.
   2. a message sent carrying a `ReplyKeyboardMarkup` **cannot** be edited to show an inline one —
      `editMessageReplyMarkup` is rejected, and the menu ships with no buttons. So there is no
      arrangement where a single bubble holds both;
-  3. but `deleteMessage` does **not** take the reply keyboard down — it lives on the chat's input
-     area, not on the message.
-- So `send_reply_panel` (`app/bot/panel.py`) sends a throwaway carrier and deletes it immediately.
-  The carrier is briefly visible while the delete round-trips, so it is installed **once per
-  (telegram_id, locale, is_admin) per process** via an in-memory set — the flicker is a rare one-off
-  instead of something on every `/start`. The cache is deliberately not persisted: a bot restart is
-  the recovery path for a user who somehow lost their panel.
-- **Not** to be re-introduced (each shipped once and was the bug): a carrier left in the chat (the
-  stray `📌 Menu` bubble), a zero-width-blank carrier (empty-looking bubble), a re-send on every
-  navigation (constant flicker), and editing the inline grid onto the panel message (fact 2 above —
+  3. the message a reply keyboard arrives on **must stay in the chat**. Telegram Desktop applies
+     the keyboard to the input area on receipt and keeps it after the message is deleted, which is
+     what an earlier "delete the carrier" design was verified against — but the mobile clients bind
+     the keyboard to its message, so deleting it takes the panel down. The symptom was the panel
+     flashing up for a second on phones and then vanishing. No delay or ordering fixes it.
+- So there is no carrier. `panel_markup` (`app/bot/panel.py`) just hands back the keyboard (or
+  `None`), and it rides on a message the handler was sending anyway: `/start` sends
+  `welcome.returning` carrying the panel, then the inline grid in a second message — the grid has
+  to be second because `nav` edits it in place and fact 2 forbids editing the panel's message.
+  A language change puts the new panel on the `language.changed` confirmation line.
+- It is handed out **once per (telegram_id, locale, is_admin) per process** via an in-memory set,
+  so later screens don't re-attach it pointlessly. The cache is deliberately not persisted, and
+  the `/start` **command** passes `force=True` to bypass it — that is the recovery route for a user
+  whose client dropped the keyboard. Without it the cache no-ops forever and only a bot restart
+  brings the panel back. The panel's own `🚀 Start` button does not force (it is pressed constantly,
+  and whoever pressed it still has the panel).
+- **Not** to be re-introduced (each shipped once and was the bug): a throwaway carrier that gets
+  deleted (fact 3 — vanishes on mobile), a carrier left in the chat with filler text (the stray
+  `📌 Menu` bubble), a zero-width-blank carrier (empty-looking bubble), a re-send on every
+  navigation (constant flicker), and editing the inline grid onto the panel message (fact 2 —
   the buttons silently vanish). `tests/unit/test_reply_panel.py` pins all of this.
 - Because `is_persistent=True`, the panel survives navigation, so `home` and `back` just edit the
-  inline screen and re-send nothing. `/start` re-installs only on a cache miss; a **language
-  change** always re-installs, since the locale is part of the key and the buttons send their own
-  localized label as plain text.
+  inline screen and re-send nothing. The `/start` command always re-issues (see `force` above); a
+  **language change** always re-issues too, since the locale is part of the key and the buttons
+  send their own localized label as plain text.
 - `InlineKeyboardMarkup` = everything else contextual: category/product lists, pagination,
   confirmations, admin CRUD, settings.
 

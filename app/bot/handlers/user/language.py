@@ -11,7 +11,7 @@ from app.bot.callbacks import LangCB, NavCB
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import language_inline_keyboard, main_inline_keyboard
-from app.bot.panel import send_reply_panel
+from app.bot.panel import panel_markup
 from app.database.models.user import User
 from app.locales.i18n import supported_locales, t
 
@@ -54,5 +54,11 @@ async def set_language(query: CallbackQuery, callback_data: LangCB, session: Asy
         )
         # The panel's buttons send their own localized label as plain text, so a locale change must
         # replace them or the `MenuButton` filter stops matching. The new locale is part of the
-        # install key, so this genuinely re-installs rather than hitting the cache.
-        await send_reply_panel(query.message, locale, is_admin=is_admin, telegram_id=user.telegram_id)
+        # install key, so this genuinely re-issues rather than hitting the cache.
+        #
+        # The edit above cannot carry it (edits take inline markup only), so the new panel rides on
+        # the confirmation line — a message worth showing on its own, and one that stays put. It
+        # must stay: deleting a reply keyboard's message takes the panel down on mobile.
+        markup = panel_markup(user.telegram_id, locale, is_admin=is_admin)
+        if markup is not None:
+            await query.message.answer(t("language.changed", locale), reply_markup=markup)

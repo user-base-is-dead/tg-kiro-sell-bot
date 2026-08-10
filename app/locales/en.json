@@ -41,9 +41,6 @@
     "prompt": "🌐 Choose your language:",
     "changed": "✅ Language set to English."
   },
-  "panel": {
-    "caption": "--"
-  },
   "errors": {
     "insufficient_balance": "💳 Insufficient balance. Top up your wallet and try again.",
     "out_of_stock": "🔴 Sorry, this item just went out of stock.",

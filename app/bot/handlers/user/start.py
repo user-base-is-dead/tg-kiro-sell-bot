@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import main_inline_keyboard
-from app.bot.panel import send_reply_panel
+from app.bot.panel import panel_markup
 from app.database.models.user import User
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
@@ -56,16 +56,24 @@ async def _send_welcome(
     locale = user.locale
     is_admin = await is_admin_user(session, user.telegram_id)
 
-    # The welcome message keeps the inline grid. The panel cannot share this message (Telegram
-    # rejects both markups on one send, and rejects editing a reply-keyboard message into an inline
-    # one), so it installs separately and cleans up after itself — see `send_reply_panel`.
+    name = user.first_name or "there"
+
+    # Two messages, in this order, and neither is a throwaway. The greeting carries the bottom
+    # panel because the message a reply keyboard arrives on has to stay in the chat — deleting it
+    # takes the panel down on mobile. The inline grid then needs its own bubble (one send cannot
+    # hold both markups) and it must be the *second* one, because `nav` edits it in place and a
+    # reply-keyboard message cannot be edited into an inline one. See `panel_markup`.
+    #
+    # `/start` forces the panel: it is the only way a user whose client dropped the keyboard can
+    # ask for it back. The panel's own Start button leaves `force_panel` false — whoever pressed
+    # it plainly still has the panel.
     await message.answer(
-        t("welcome.subtitle", locale, name=user.first_name or "there"),
-        reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
+        t("welcome.returning", locale, name=name),
+        reply_markup=panel_markup(
+            user.telegram_id, locale, is_admin=is_admin, force=force_panel
+        ),
     )
-    # `/start` forces the re-send: it is the only way a user who lost the panel can ask for it back
-    # (the install cache would otherwise no-op forever). The panel's own Start button leaves
-    # `force_panel` false — whoever pressed it plainly still has the panel.
-    await send_reply_panel(
-        message, locale, is_admin=is_admin, telegram_id=user.telegram_id, force=force_panel
+    await message.answer(
+        t("welcome.subtitle", locale, name=name),
+        reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
     )
