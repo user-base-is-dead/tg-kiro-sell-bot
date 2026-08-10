@@ -56,14 +56,18 @@ def test_reply_and_inline_menus_show_the_same_entries(locale: str) -> None:
     stay identical — MenuButton matches a reply press by its label text.
 
     The panel's leading Start row is excluded: it navigates to the inline menu, which cannot carry a
-    link to itself."""
+    link to itself. The community row is excluded for the mirror-image reason: it is a url button,
+    and a reply button can only send its label as text — there is nothing for it to open."""
     from app.locales.i18n import t
 
     inline = main_inline_keyboard(locale, is_admin=True)
     reply = main_reply_keyboard(locale, is_admin=True)
     reply_labels = [b.text for row in reply.keyboard for b in row]
+    inline_labels = [
+        b.text for row in inline.inline_keyboard for b in row if b.text != t("menu.community", locale)
+    ]
     assert reply_labels[0] == t("menu.start", locale)
-    assert reply_labels[1:] == [b.text for row in inline.inline_keyboard for b in row]
+    assert reply_labels[1:] == inline_labels
 
 
 @pytest.mark.parametrize("locale", supported_locales())

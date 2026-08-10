@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     support_group_id: int | None = Field(default=None, alias="SUPPORT_GROUP_ID")
     log_chat_id: int | None = Field(default=None, alias="LOG_CHAT_ID")
 
+    # Public community group shown on the welcome screen. Blank hides the link and its button
+    # entirely, so a deployment without a group never advertises a dead one.
+    community_group_url: str = Field(
+        default="https://t.me/kiro_seller_group", alias="COMMUNITY_GROUP_URL"
+    )
+
     default_currency: str = Field(default="USD", alias="DEFAULT_CURRENCY")
     default_locale: str = Field(default="en", alias="DEFAULT_LOCALE")
 

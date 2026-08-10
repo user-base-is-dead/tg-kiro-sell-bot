@@ -2,6 +2,7 @@
   "welcome": {
     "title": "✨ <b>{store_name}</b> ✨",
     "subtitle": "Hey {name}! 👋\n\nWelcome to your premium digital-product store. We're thrilled to have you here!\n\n🛍️ Browse our exclusive collection\n📦 Track your orders in real-time\n💬 Get instant support when you need it\n🎁 Enjoy special offers and rewards\n\nPick an option below to get started.",
+    "community": "\n\n━━━━━━━━━━━━━━━━━━\n👥 <b>Join our official group</b>\n👉 <a href=\"{group_url}\">{group_url}</a>\n\nNew drops, restocks and offers are posted there first, and you can see real buyers vouch before you order. Tap the link above or use the <b>Join Our Group</b> button below.\n━━━━━━━━━━━━━━━━━━",
     "returning": "👋 Welcome back, {name}!"
   },
   "menu": {
@@ -15,6 +16,7 @@
     "warranty": "🔧 Warranty",
     "topup": "💳 Top Up",
     "profile": "👤 Profile",
+    "community": "👥 Join Our Group",
     "admin_panel": "🛡️ Admin Panel",
     "back": "🔙 Back",
     "home": "🏠 Home",

@@ -10,6 +10,7 @@ from aiogram.types import (
 from app.bot.callbacks import LangCB, NavCB
 from app.bot.keyboards.common import with_nav
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
+from app.core.config import get_settings
 from app.locales.i18n import supported_locales, t
 
 _LOCALE_LABEL = {"en": "🇬🇧 English"}
@@ -48,6 +49,13 @@ def main_inline_keyboard(locale: str, *, is_admin: bool) -> InlineKeyboardMarkup
         [_btn("menu.gift", "gift"), _btn("menu.refer", "refer")],
         [_btn("menu.warranty", "warranty"), _btn("menu.support", "support")],
     ]
+    # A url button, not a callback one: it opens the group directly instead of costing the user a
+    # round trip through the bot. Skipped when no group is configured, so the row is never dead.
+    group_url = get_settings().community_group_url.strip()
+    if group_url:
+        rows.append(
+            [InlineKeyboardButton(text=t("menu.community", locale), url=group_url, style=PRIMARY)]
+        )
     if is_admin:
         rows.append([_btn("menu.admin_panel", "admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -75,13 +75,22 @@ async def run_worker(bot: Bot, database_url: str, broadcast_id: int) -> None:
     a crash/restart resumes exactly where it left off — nothing is double-sent."""
     engine = build_engine(database_url)
     sessionmaker = build_sessionmaker(engine)
+    # The caller creates the broadcast in its own request-scoped session and spawns us before that
+    # session commits, so on the first pass the row is usually not visible on this connection yet.
+    # Treat "not there" as "not there *yet*" for a short window; only after that is it really gone.
+    attempts = 0
 
     try:
         while True:
             async with session_scope(sessionmaker) as session:
                 broadcast = await session.get(Broadcast, broadcast_id)
                 if broadcast is None:
-                    return
+                    attempts += 1
+                    if attempts > 20:
+                        logger.error("broadcast %s never became visible; giving up", broadcast_id)
+                        return
+                    await asyncio.sleep(0.5)
+                    continue
 
                 result = await session.execute(
                     select(BroadcastDelivery, User)
