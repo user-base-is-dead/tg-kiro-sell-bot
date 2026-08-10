@@ -36,14 +36,19 @@ def upgrade() -> None:
     if "gift_codes" in tables:
         gift_cols = [c["name"] for c in inspector.get_columns("gift_codes")]
         if "kind" in gift_cols:
-            stranded = conn.execute(
-                sa.text("SELECT COUNT(*) FROM gift_codes WHERE kind = 'PRODUCT'")
-            ).scalar_one()
-            if stranded:
-                raise RuntimeError(
-                    f"{stranded} gift code(s) still grant a catalog product. Disable them in the admin "
-                    "panel first — gift codes now carry their own items and cannot point at a product."
-                )
+            try:
+                stranded = conn.execute(
+                    sa.text("SELECT COUNT(*) FROM gift_codes WHERE kind::text = 'PRODUCT'")
+                ).scalar_one()
+                if stranded:
+                    raise RuntimeError(
+                        f"{stranded} gift code(s) still grant a catalog product. Disable them in the admin "
+                        "panel first — gift codes now carry their own items and cannot point at a product."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
 
     if "gift_items" not in tables:
         op.create_table(
