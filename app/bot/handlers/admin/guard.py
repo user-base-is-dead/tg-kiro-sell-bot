@@ -5,11 +5,10 @@ import logging
 from aiogram import Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters.menu_button import MenuButton
-from app.bot.keyboards.main_menu import main_reply_keyboard
 from app.bot.states.broadcast_form import BroadcastForm
 from app.bot.states.category_form import CategoryForm
 from app.bot.states.gift_form import GiftAddItemsForm, GiftCreateForm, GiftEditForm
@@ -125,12 +124,12 @@ async def deny_admin_message(
     telegram_id = user.telegram_id if user else (message.from_user.id if message.from_user else 0)
     await _record(session, telegram_id, (message.text or "")[:256], "command")
 
-    # A reply keyboard lives on the client until it is replaced, so a demoted admin keeps seeing
-    # the 🛡️ row until something re-sends the panel. If that stale row is what they just pressed,
-    # replace it here instead of making them find their way to /start.
+    # A reply keyboard lives on the client until the bot takes it down, so someone pressing the
+    # 🛡️ row is pressing a button from the retired panel. Clear it here rather than making them
+    # find their way to /start for the removal.
     markup = None
     if message.text == t("menu.admin_panel", locale):
-        markup = main_reply_keyboard(locale, is_admin=False)
+        markup = ReplyKeyboardRemove()
 
     await message.answer(t("common.unauthorized", locale), reply_markup=markup)
 

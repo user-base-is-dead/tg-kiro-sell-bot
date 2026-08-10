@@ -59,15 +59,13 @@ async def _send_welcome(
 
     name = user.first_name or "there"
 
-    # Two messages, in this order, and neither is a throwaway. The greeting carries the bottom
-    # panel because the message a reply keyboard arrives on has to stay in the chat — deleting it
-    # takes the panel down on mobile. The inline grid then needs its own bubble (one send cannot
-    # hold both markups) and it must be the *second* one, because `nav` edits it in place and a
-    # reply-keyboard message cannot be edited into an inline one. See `panel_markup`.
+    # Two messages, in this order. The greeting carries the removal of the retired bottom panel
+    # (`panel_markup`) — a ReplyKeyboardRemove has to ride on a real send, and it cannot share a
+    # message with the inline grid, so the grid gets the second bubble. That order also suits
+    # `nav`, which edits the inline message in place.
     #
-    # `/start` forces the panel: it is the only way a user whose client dropped the keyboard can
-    # ask for it back. The panel's own Start button leaves `force_panel` false — whoever pressed
-    # it plainly still has the panel.
+    # `/start` forces the removal even if this process already sent it: it is the recovery route
+    # for a client still showing the old panel.
     await message.answer(
         t("welcome.returning", locale, name=name),
         reply_markup=panel_markup(

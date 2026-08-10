@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-from aiogram.types import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-)
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.callbacks import LangCB, NavCB
 from app.bot.keyboards.common import with_nav
-from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
+from app.bot.keyboards.styles import PRIMARY, btn
 from app.core.config import get_settings
 from app.locales.i18n import supported_locales, t
 
@@ -27,11 +22,8 @@ _MENU_TARGETS = (
     "admin_panel",
 )
 
-# The inline menu is blue. The bottom panel is deliberately left unstyled: clients paint reply
-# labels in the theme accent (blue) whatever `style` says, and `style` offers only
-# primary/success/danger — no colour among them that a blue label sits well on. Default white it is.
+# The inline menu is one flat blue.
 _STYLE = dict.fromkeys(_MENU_TARGETS, PRIMARY)
-_REPLY_STYLE: str | None = NEUTRAL
 
 
 def main_inline_keyboard(locale: str, *, is_admin: bool) -> InlineKeyboardMarkup:
@@ -61,33 +53,8 @@ def main_inline_keyboard(locale: str, *, is_admin: bool) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# The same entries as the inline menu, in the same order, so the bottom panel and the in-message
-# menu never look like two different products. `style` works here too (Bot API 9.4) — a reply
-# button's unstyled default is white rather than transparent.
-#
-# The one exception is the leading Start row: the panel is the only surface visible from *inside*
-# another screen (or a half-finished form), so it carries the way back to the top. The inline menu
-# is that top, and would be linking to itself.
-_REPLY_LAYOUT: list[list[str]] = [
-    ["menu.start"],
-    ["menu.products", "menu.orders"],
-    ["menu.profile", "menu.topup"],
-    ["menu.gift", "menu.refer"],
-    ["menu.warranty", "menu.support"],
-]
-
-
-def main_reply_keyboard(locale: str, *, is_admin: bool) -> ReplyKeyboardMarkup:
-    """Persistent bottom panel. Its buttons send their own localized label as plain text, which the
-    `MenuButton` filter matches back to an i18n key — so it must be re-sent whenever the user's
-    locale changes, or the old labels stop matching."""
-    rows = [
-        [KeyboardButton(text=t(key, locale), style=_REPLY_STYLE) for key in row]
-        for row in _REPLY_LAYOUT
-    ]
-    if is_admin:
-        rows.append([KeyboardButton(text=t("menu.admin_panel", locale), style=_REPLY_STYLE)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
+# There is no reply-keyboard panel any more — see `app.bot.panel`. The `MenuButton` filter and its
+# handlers stay: a client that still shows the old panel keeps working until the removal reaches it.
 
 
 def language_inline_keyboard(locale: str = "en") -> InlineKeyboardMarkup:

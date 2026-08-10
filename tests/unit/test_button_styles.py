@@ -3,23 +3,14 @@ from __future__ import annotations
 import pytest
 
 from app.bot.keyboards.common import confirm_row, nav_row
-from app.bot.keyboards.main_menu import (
-    language_inline_keyboard,
-    main_inline_keyboard,
-    main_reply_keyboard,
-)
+from app.bot.keyboards.main_menu import language_inline_keyboard, main_inline_keyboard
 from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
-from app.locales.i18n import supported_locales
 
 VALID = {PRIMARY, SUCCESS, DANGER, None}
 
 
 def _styles(markup) -> list[str | None]:
     return [b.style for row in markup.inline_keyboard for b in row]
-
-
-def _reply_styles(markup) -> list[str | None]:
-    return [b.style for row in markup.keyboard for b in row]
 
 
 def test_btn_rejects_unknown_style() -> None:
@@ -45,63 +36,10 @@ def test_admin_row_is_only_present_for_admins() -> None:
     assert not any("Admin" in label for label in user_labels)
 
 
-@pytest.mark.parametrize("is_admin", [False, True])
-def test_reply_keyboard_styles_are_valid(is_admin: bool) -> None:
-    assert set(_reply_styles(main_reply_keyboard("en", is_admin=is_admin))) <= VALID
-
-
-@pytest.mark.parametrize("locale", supported_locales())
-def test_reply_and_inline_menus_show_the_same_entries(locale: str) -> None:
-    """The bottom panel and the in-message menu are two renderings of one menu, so their labels must
-    stay identical — MenuButton matches a reply press by its label text.
-
-    The panel's leading Start row is excluded: it navigates to the inline menu, which cannot carry a
-    link to itself. The community row is excluded for the mirror-image reason: it is a url button,
-    and a reply button can only send its label as text — there is nothing for it to open."""
-    from app.locales.i18n import t
-
-    inline = main_inline_keyboard(locale, is_admin=True)
-    reply = main_reply_keyboard(locale, is_admin=True)
-    reply_labels = [b.text for row in reply.keyboard for b in row]
-    inline_labels = [
-        b.text for row in inline.inline_keyboard for b in row if b.text != t("menu.community", locale)
-    ]
-    assert reply_labels[0] == t("menu.start", locale)
-    assert reply_labels[1:] == inline_labels
-
-
-@pytest.mark.parametrize("locale", supported_locales())
-def test_start_is_the_first_row_of_the_panel_only(locale: str) -> None:
-    from app.locales.i18n import t
-
-    reply = main_reply_keyboard(locale, is_admin=False)
-    assert [b.text for b in reply.keyboard[0]] == [t("menu.start", locale)]
-    inline_labels = [b.text for row in main_inline_keyboard(locale, is_admin=False).inline_keyboard for b in row]
-    assert t("menu.start", locale) not in inline_labels
-
-
 def test_main_menu_is_one_flat_color() -> None:
-    # Inline is uniformly blue; the panel is uniformly unstyled. Start is included in the second
-    # assertion on purpose — as the lone styled row it was the unreadable case that started this.
+    # A lone styled row among unstyled ones was the unreadable case that started this: the menu is
+    # uniformly blue, url button included.
     assert set(_styles(main_inline_keyboard("en", is_admin=True))) == {PRIMARY}
-    assert set(_reply_styles(main_reply_keyboard("en", is_admin=True))) == {None}
-
-
-@pytest.mark.parametrize("locale", supported_locales())
-def test_reply_keyboard_labels_match_the_locale(locale: str) -> None:
-    # Each button sends its own label as plain text, so the labels must be the ones MenuButton
-    # resolves for that same locale.
-    from app.locales.i18n import t
-
-    labels = {b.text for row in main_reply_keyboard(locale, is_admin=False).keyboard for b in row}
-    assert t("menu.products", locale) in labels
-    assert t("menu.topup", locale) in labels
-
-
-def test_reply_keyboard_is_persistent_and_resized() -> None:
-    kb = main_reply_keyboard("en", is_admin=False)
-    assert kb.is_persistent is True
-    assert kb.resize_keyboard is True
 
 
 def test_top_level_screens_offer_exactly_one_way_back() -> None:

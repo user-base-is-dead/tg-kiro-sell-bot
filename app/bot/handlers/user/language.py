@@ -52,13 +52,9 @@ async def set_language(query: CallbackQuery, callback_data: LangCB, session: Asy
             t("welcome.subtitle", locale, name=user.first_name or "there"),
             reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
         )
-        # The panel's buttons send their own localized label as plain text, so a locale change must
-        # replace them or the `MenuButton` filter stops matching. The new locale is part of the
-        # install key, so this genuinely re-issues rather than hitting the cache.
-        #
-        # The edit above cannot carry it (edits take inline markup only), so the new panel rides on
-        # the confirmation line — a message worth showing on its own, and one that stays put. It
-        # must stay: deleting a reply keyboard's message takes the panel down on mobile.
+        # Takes down the retired bottom panel if this user still has it. The edit above cannot
+        # carry that (edits take inline markup only), so it rides on the confirmation line — a
+        # message worth showing on its own. `None` means they are already clear of it.
         markup = panel_markup(user.telegram_id, locale, is_admin=is_admin)
         if markup is not None:
             await query.message.answer(t("language.changed", locale), reply_markup=markup)

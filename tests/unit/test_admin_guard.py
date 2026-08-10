@@ -185,16 +185,14 @@ async def test_denied_command_replies_in_the_users_locale(locale: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("locale", supported_locales())
 async def test_pressing_the_stale_admin_button_replaces_the_keyboard(locale: str) -> None:
-    """A reply keyboard persists on the client until replaced, so a demoted admin keeps seeing the
-    🛡️ row. Pressing it must hand back a keyboard that no longer has it."""
+    """A reply keyboard persists on the client until the bot takes it down, so anyone pressing the
+    🛡️ row is pressing a button from the retired panel. Answer by removing it."""
+    from aiogram.types import ReplyKeyboardRemove
+
     message = _FakeMessage(t("menu.admin_panel", locale))
     await deny_admin_message(message, session=None, user=_FakeUser(locale))
 
-    markup = message.markups[0]
-    assert markup is not None
-    labels = [b.text for row in markup.keyboard for b in row]
-    assert t("menu.admin_panel", locale) not in labels
-    assert t("menu.products", locale) in labels
+    assert isinstance(message.markups[0], ReplyKeyboardRemove)
 
 
 @pytest.mark.asyncio
