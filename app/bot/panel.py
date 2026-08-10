@@ -37,7 +37,9 @@ def is_sendable_text(text: str | None) -> bool:
     return any(not ch.isspace() and ch not in zero_width for ch in stripped)
 
 
-async def send_reply_panel(message: Message, locale: str, *, is_admin: bool, telegram_id: int) -> None:
+async def send_reply_panel(
+    message: Message, locale: str, *, is_admin: bool, telegram_id: int, force: bool = False
+) -> None:
     """Install the bottom panel without leaving a bubble in the chat.
 
     READ THIS BEFORE CHANGING ANYTHING HERE. Every "obvious" alternative has been tried on the real
@@ -61,16 +63,25 @@ async def send_reply_panel(message: Message, locale: str, *, is_admin: bool, tel
     flicker is a rare one-off rather than something the user sees constantly.
 
     The cache is in-memory on purpose. Persisting it would mean a user who lost the panel could
-    never get it back; a bot restart clearing it is the recovery path. The locale and admin flag are
-    part of the key because the panel's buttons send their own localized label as plain text (the
-    `MenuButton` filter matches them back), so changing either has to re-install it.
+    never get it back. The locale and admin flag are part of the key because the panel's buttons
+    send their own localized label as plain text (the `MenuButton` filter matches them back), so
+    changing either has to re-install it.
+
+    `force=True` skips the cache entirely. The keyboard can still go missing on the client — it is
+    `is_persistent`, but the carrier that delivered it was deleted, so a client that rebuilds the
+    chat from history (relogin, cache clear, new device) has nothing left to restore it from. When
+    that happens the cache says "installed" and every later call is a no-op, which left a user with
+    no way back short of a bot restart. The `/start` *command* is the recovery route and passes
+    `force=True`; it is typed deliberately and rarely, so the one-off carrier flicker is a fair
+    price. The panel's own Start *button* must NOT force — it is pressed constantly, and the user
+    pressing it obviously still has the panel.
 
     Never "improve" this into: a carrier left in the chat (the stray `📌 Menu` bubble), a
     zero-width-blank carrier (an empty-looking bubble, and Telegram rejects truly empty text), or
     a re-send on every navigation (constant flicker).
     """
     key = (telegram_id, locale, is_admin)
-    if key in _installed:
+    if key in _installed and not force:
         return
 
     caption = t("panel.caption", locale)

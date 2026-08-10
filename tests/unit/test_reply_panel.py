@@ -77,6 +77,19 @@ async def test_panel_is_installed_once_per_user() -> None:
 
 
 @pytest.mark.asyncio
+async def test_force_reinstalls_an_already_installed_panel() -> None:
+    """The install cache has no invalidation path, so without a bypass a user who lost the keyboard
+    (client resync drops it — the carrier that delivered it was deleted) could never get it back
+    short of a bot restart. `/start` is the recovery route and must ignore the cache."""
+    message = _Message()
+
+    await send_reply_panel(message, "en", is_admin=False, telegram_id=1)
+    await send_reply_panel(message, "en", is_admin=False, telegram_id=1, force=True)
+
+    assert len(message.sent) == 2, "force must re-send even when the key is cached"
+
+
+@pytest.mark.asyncio
 async def test_a_locale_change_reinstalls_the_panel() -> None:
     """The buttons send their own localized label as plain text, so stale labels stop matching the
     `MenuButton` filter. The locale is part of the install key precisely to force a re-send."""

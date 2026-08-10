@@ -32,12 +32,12 @@ async def cmd_start_with_ref(message: Message, command: CommandObject, session: 
         if referrer is not None and referrer.id != user.id:
             user.referred_by_id = referrer.id
             await session.flush()
-    await _send_welcome(message, session, user)
+    await _send_welcome(message, session, user, force_panel=True)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession, user: User) -> None:
-    await _send_welcome(message, session, user)
+    await _send_welcome(message, session, user, force_panel=True)
 
 
 @router.message(MenuButton("menu.start"))
@@ -50,7 +50,9 @@ async def on_start_button(message: Message, state: FSMContext, session: AsyncSes
     await _send_welcome(message, session, user)
 
 
-async def _send_welcome(message: Message, session: AsyncSession, user: User) -> None:
+async def _send_welcome(
+    message: Message, session: AsyncSession, user: User, *, force_panel: bool = False
+) -> None:
     locale = user.locale
     is_admin = await is_admin_user(session, user.telegram_id)
 
@@ -61,4 +63,9 @@ async def _send_welcome(message: Message, session: AsyncSession, user: User) -> 
         t("welcome.subtitle", locale, name=user.first_name or "there"),
         reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
     )
-    await send_reply_panel(message, locale, is_admin=is_admin, telegram_id=user.telegram_id)
+    # `/start` forces the re-send: it is the only way a user who lost the panel can ask for it back
+    # (the install cache would otherwise no-op forever). The panel's own Start button leaves
+    # `force_panel` false — whoever pressed it plainly still has the panel.
+    await send_reply_panel(
+        message, locale, is_admin=is_admin, telegram_id=user.telegram_id, force=force_panel
+    )
