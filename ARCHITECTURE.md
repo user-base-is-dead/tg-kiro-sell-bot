@@ -78,11 +78,9 @@ unstyled button — that's how styling drifts back out of a screen.
      the keyboard to its message, so deleting it takes the panel down. The symptom was the panel
      flashing up for a second on phones and then vanishing. No delay or ordering fixes it.
 - So there is no carrier. `panel_markup` (`app/bot/panel.py`) just hands back the keyboard (or
-  `None`), and it rides on a message the handler was sending anyway. `/start` splits the existing
-  welcome copy across two bubbles rather than inventing a second message: `welcome.subtitle`
-  carries the panel, then `welcome.menu_prompt` carries the inline grid. The grid has to be second
-  because `nav` (and the language handler) edit it in place, and fact 2 forbids editing the panel's
-  message — so those edits target `welcome.menu_prompt`, not `welcome.subtitle`.
+  `None`), and it rides on a message the handler was sending anyway: `/start` sends
+  `welcome.returning` carrying the panel, then the inline grid in a second message — the grid has
+  to be second because `nav` edits it in place and fact 2 forbids editing the panel's message.
   A language change puts the new panel on the `language.changed` confirmation line.
 - It is handed out **once per (telegram_id, locale, is_admin) per process** via an in-memory set,
   so later screens don't re-attach it pointlessly. The cache is deliberately not persisted, and

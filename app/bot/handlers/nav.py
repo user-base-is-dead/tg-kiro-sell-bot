@@ -55,12 +55,8 @@ async def on_nav(
         # No panel re-send here. The reply keyboard is `is_persistent=True`, so it is still on the
         # client from `/start`; re-installing it would need a fresh message (edits cannot carry a
         # reply keyboard) and that extra bubble is exactly what we refuse to put in the chat.
-        #
-        # `welcome.menu_prompt`, not `welcome.subtitle`: this edits the grid message, and on
-        # `/start` that is the closing line. The greeting bubble above it carries the panel and is
-        # left alone.
         await query.message.edit_text(
-            t("welcome.menu_prompt", user.locale),
+            t("welcome.subtitle", user.locale, name=user.first_name or "there"),
             reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
         )
         await query.answer()

@@ -56,24 +56,24 @@ async def _send_welcome(
     locale = user.locale
     is_admin = await is_admin_user(session, user.telegram_id)
 
-    # The welcome copy is split across two messages rather than a second message being invented,
-    # because the panel needs a bubble of its own that STAYS in the chat: one send cannot hold an
-    # inline keyboard and a reply keyboard together, and deleting a reply keyboard's message takes
-    # the panel down on mobile (that was the "flashes up, then vanishes" bug). So the greeting
-    # carries the panel and the closing line carries the inline grid. The grid has to be the
-    # second one — `nav` edits it in place, and a reply-keyboard message cannot be edited into an
-    # inline one. See `panel_markup`.
+    name = user.first_name or "there"
+
+    # Two messages, in this order, and neither is a throwaway. The greeting carries the bottom
+    # panel because the message a reply keyboard arrives on has to stay in the chat — deleting it
+    # takes the panel down on mobile. The inline grid then needs its own bubble (one send cannot
+    # hold both markups) and it must be the *second* one, because `nav` edits it in place and a
+    # reply-keyboard message cannot be edited into an inline one. See `panel_markup`.
     #
     # `/start` forces the panel: it is the only way a user whose client dropped the keyboard can
     # ask for it back. The panel's own Start button leaves `force_panel` false — whoever pressed
     # it plainly still has the panel.
     await message.answer(
-        t("welcome.subtitle", locale, name=user.first_name or "there"),
+        t("welcome.returning", locale, name=name),
         reply_markup=panel_markup(
             user.telegram_id, locale, is_admin=is_admin, force=force_panel
         ),
     )
     await message.answer(
-        t("welcome.menu_prompt", locale),
+        t("welcome.subtitle", locale, name=name),
         reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
     )

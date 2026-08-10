@@ -1,8 +1,7 @@
 {
   "welcome": {
     "title": "✨ <b>{store_name}</b> ✨",
-    "subtitle": "Hey {name}! 👋\n\nWelcome to your premium digital-product store. We're thrilled to have you here!\n\n🛍️ Browse our exclusive collection\n📦 Track your orders in real-time\n💬 Get instant support when you need it\n🎁 Enjoy special offers and rewards",
-    "menu_prompt": "Pick an option below to get started.",
+    "subtitle": "Hey {name}! 👋\n\nWelcome to your premium digital-product store. We're thrilled to have you here!\n\n🛍️ Browse our exclusive collection\n📦 Track your orders in real-time\n💬 Get instant support when you need it\n🎁 Enjoy special offers and rewards\n\nPick an option below to get started.",
     "returning": "👋 Welcome back, {name}!"
   },
   "menu": {

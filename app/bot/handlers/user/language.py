@@ -49,7 +49,7 @@ async def set_language(query: CallbackQuery, callback_data: LangCB, session: Asy
     if query.message:
         logger.debug("Language changed to %s, updating keyboards", locale)
         await query.message.edit_text(
-            t("welcome.menu_prompt", locale),
+            t("welcome.subtitle", locale, name=user.first_name or "there"),
             reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
         )
         # The panel's buttons send their own localized label as plain text, so a locale change must
