@@ -62,7 +62,7 @@ async def test_a_covered_wallet_can_still_pay_the_full_price_in_crypto(
 
     invoiced: list[float] = []
 
-    async def _fake_details(session, uid, amount, locale):  # noqa: ANN001 - test double
+    async def _fake_details(session, uid, amount, locale, **kwargs):  # noqa: ANN001 - test double
         invoiced.append(amount)
         return "invoice", None
 

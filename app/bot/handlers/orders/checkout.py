@@ -9,6 +9,7 @@ from app.bot.delivery_notes import delivery_note
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.products import category_back_target
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
+from app.database.models.catalog import FulfillmentMode
 from app.database.models.user import User
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.wallet_repo import WalletRepo
@@ -96,13 +97,23 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
     # Reserve ONE credential for this buyer — not the product. The other credentials stay on the
     # shelf and other buyers can check out against them at the same time. `hold_one` is re-entrant,
     # so coming back to this screen refreshes the same credential instead of taking a second.
-    held = await stock_hold_service.hold_one(session, product.id, user.id)
-    if held is None:
-        # Everything free was taken between rendering the payment chooser and getting here.
-        return None
-    remaining = await stock_hold_service.seconds_remaining(session, product.id, user.id)
-    minutes = remaining // 60
-    seconds = remaining % 60
+    #
+    # MANUAL products are exempt. They are not backed by a code pool at all — the admin fulfils each
+    # order by hand — so there is nothing legitimate to reserve. Holding here did real damage twice
+    # over: a manual product with an unrelated stock pool had a credential quietly taken off the
+    # shelf on every checkout, and a manual product with an EMPTY pool could not be bought at all,
+    # because `hold_one` returned None and this screen refused to render.
+    if product.fulfillment_mode is FulfillmentMode.MANUAL:
+        remaining = 0
+    else:
+        held = await stock_hold_service.hold_one(session, product.id, user.id)
+        if held is None:
+            # Everything free was taken between rendering the payment chooser and getting here.
+            return None
+        remaining = await stock_hold_service.seconds_remaining(session, product.id, user.id)
+    # No hold, no countdown: a "payment expires in 0m 0s" line on a manual product would be a
+    # deadline the buyer cannot miss and does not have.
+    countdown = f"\n\n⏱️ <b>Payment expires in:</b> {remaining // 60}m {remaining % 60}s" if remaining else ""
 
     text = (
         t("orders.confirm_title", user.locale) + "\n\n" + t(
@@ -112,7 +123,7 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
             price=format_minor(product.price_minor, product.currency),
             balance=format_minor(wallet.balance_minor, wallet.currency),
         )
-        + f"\n\n⏱️ <b>Payment expires in:</b> {minutes}m {seconds}s"
+        + countdown
         + f"\n{PAD}"
     )
     # One exit, not two. This screen used to carry ❌ Cancel *and* 🔙 Back, which looked like a
@@ -187,13 +198,20 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
     shortfall_minor = max(0, product.price_minor - wallet.balance_minor)
     invoice_minor = shortfall_minor or product.price_minor
 
-    held = await stock_hold_service.hold_one(session, product.id, user.id)
-    if held is None:
-        await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
-        return
+    # MANUAL products hold nothing — see `render_checkout_confirm` for why reserving a credential
+    # for a hand-fulfilled order is wrong in both directions.
+    if product.fulfillment_mode is not FulfillmentMode.MANUAL:
+        held = await stock_hold_service.hold_one(session, product.id, user.id)
+        if held is None:
+            await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
+            return
 
+    # The invoice is told what it is paying for. It is still mechanically a wallet top-up, but the
+    # buyer came here from a product page and reading "Top-Up Amount" on the screen they opened to
+    # buy something reads like the bot lost track of the purchase — and Cancel used to dump them on
+    # the generic Top Up Wallet screen, miles from the product they were mid-purchase on.
     text, markup = await render_payment_details(
-        session, user.id, invoice_minor / 100, user.locale
+        session, user.id, invoice_minor / 100, user.locale, purchase_product_id=product.id
     )
     await query.message.edit_text(
         text + "\n\n🛒 <b>After this confirms, press Buy Now again to complete the purchase.</b>",
@@ -247,6 +265,9 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
         )
     else:
         lines.append(t("orders.manual_pending", user.locale))
+        # Nothing about a manual order reaches an admin on its own — push it, or it waits for
+        # somebody to open the admin panel out of curiosity.
+        await order_service.notify_admins_of_manual_order(query.bot, session, order)
 
     # Both routes get the how-to-use-it note: an AUTO buyer needs it alongside the key they just
     # got, and a MANUAL buyer needs to know what is coming before it arrives.

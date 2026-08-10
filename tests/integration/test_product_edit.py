@@ -12,7 +12,7 @@ def test_detail_screen_edits_every_field_in_one_tap() -> None:
     """The detail screen once had no Edit at all (a price could not be changed without deleting and
     recreating the product), then gained an `✏️ Edit` button that only opened a second screen asking
     which field. Both are gone: every field is reachable directly from the product."""
-    product = SimpleNamespace(id=7, is_active=True)
+    product = SimpleNamespace(id=7, is_active=True, fulfillment_mode=FulfillmentMode.AUTO)
     targets = [b.callback_data for row in _detail_keyboard(product).inline_keyboard for b in row]
 
     for code in _EDIT_FIELDS:
@@ -22,7 +22,7 @@ def test_detail_screen_edits_every_field_in_one_tap() -> None:
 
 def test_delete_asks_before_it_deletes() -> None:
     """Delete is the only irreversible button on the screen, so it goes through a confirmation."""
-    product = SimpleNamespace(id=7, is_active=True)
+    product = SimpleNamespace(id=7, is_active=True, fulfillment_mode=FulfillmentMode.AUTO)
     targets = [b.callback_data for row in _detail_keyboard(product).inline_keyboard for b in row]
 
     assert "aprod:delete:7:1" in targets

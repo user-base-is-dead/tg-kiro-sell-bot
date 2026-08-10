@@ -155,7 +155,16 @@ def _detail_keyboard(product) -> InlineKeyboardMarkup:
             ],
             [
                 btn("🛡️ Warranty", f"pedit:wr:{pid}", PRIMARY),
-                btn("⚡ Fulfillment", f"pedit:md:{pid}", PRIMARY),
+                # The button carries the current mode, not just the field name. Auto and Manual
+                # behave completely differently at checkout, and "⚡ Fulfillment" gave no way to
+                # tell which one a product was on without opening the editor to find out.
+                btn(
+                    "⚡ Fulfillment: Auto"
+                    if product.fulfillment_mode is FulfillmentMode.AUTO
+                    else "🙋 Fulfillment: Manual",
+                    f"pedit:md:{pid}",
+                    PRIMARY,
+                ),
             ],
             [btn("🚚 Delivery info", f"pedit:dv:{pid}", PRIMARY)],
             [btn("📦 Add Stock", AdminProductCB(action="stock", id=pid).pack(), SUCCESS)],
@@ -907,15 +916,31 @@ async def prompt_edit_field(query: CallbackQuery, state: FSMContext, session: As
         return [btn("🔙 Back", AdminProductCB(action="view", id=product_id).pack(), DANGER)]
 
     if code == "md":
+        # Which mode is live is the first thing you want to know on this screen — it is stated in
+        # the body and ticked on the button, so the choice reads as "change it to" rather than
+        # "pick one of these two, whichever you're already on".
+        product = await ProductRepo(session).get_by_id(int(product_id))
+        is_auto = product is not None and product.fulfillment_mode is FulfillmentMode.AUTO
+        current = "⚡ Auto" if is_auto else "🙋 Manual"
         await query.message.edit_text(
             "✏️ <b>Fulfillment mode</b>\n\n"
+            f"Currently: <b>{current}</b>\n\n"
             "⚡ <b>Auto</b> — a stock item is sent the moment payment clears.\n"
-            "🙋 <b>Manual</b> — the order lands in your queue and you fulfil it.",
+            "🙋 <b>Manual</b> — the order lands in your queue and you fulfil it. Your stock pool "
+            "is left untouched; you send the content yourself.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        btn("⚡ Auto", f"pedset:md:auto:{product_id}", PRIMARY),
-                        btn("🙋 Manual", f"pedset:md:manual:{product_id}", PRIMARY),
+                        btn(
+                            "✅ ⚡ Auto" if is_auto else "⚡ Auto",
+                            f"pedset:md:auto:{product_id}",
+                            SUCCESS if is_auto else PRIMARY,
+                        ),
+                        btn(
+                            "✅ 🙋 Manual" if not is_auto else "🙋 Manual",
+                            f"pedset:md:manual:{product_id}",
+                            PRIMARY if is_auto else SUCCESS,
+                        ),
                     ],
                     _cancel_row(),
                 ]

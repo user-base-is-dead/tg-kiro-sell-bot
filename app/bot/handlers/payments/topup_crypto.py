@@ -12,6 +12,7 @@ from app.bot.states.topup_form import TopUpForm
 from app.database.models.user import User
 from app.database.models.crypto import CryptoPayment
 from app.locales.i18n import t
+from app.services import stock_hold_service
 from app.services.payments.blockchain_monitor import BlockchainMonitor
 from app.utils.time import as_utc
 
@@ -21,12 +22,26 @@ PAYMENT_TIMEOUT_MINUTES = 15
 SERVICE_FEE = 0.2  # USD — the base fee; see `_unique_total` for why an invoice may add cents.
 
 
-async def render_topup_packages(locale: str, show_title: bool = True) -> tuple[str, InlineKeyboardMarkup]:
-    """Show available top-up packages."""
+async def _balance_minor(session: AsyncSession, user_id: int) -> int:
+    from app.database.repositories.wallet_repo import WalletRepo
+
+    wallet = await WalletRepo(session).get_or_create(user_id, currency="USD")
+    return wallet.balance_minor
+
+
+async def render_topup_packages(
+    locale: str, show_title: bool = True, *, balance_minor: int = 0
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Show available top-up packages.
+
+    `balance_minor` is passed in rather than looked up here because the screen is rendered from
+    places that already hold the wallet. It used to be hardcoded to $0.00, which told every user
+    with money that they had none.
+    """
     if show_title:
         text = (
             "💰 <b>Top Up Wallet - Crypto</b>\n\n"
-            "Current balance: $0.00\n\n"
+            f"Current balance: ${balance_minor / 100:.2f}\n\n"
             "Enter the amount to top up your wallet with USDT (BNB Chain):\n"
         )
     else:
@@ -69,38 +84,65 @@ async def _unique_total(session: AsyncSession, amount_usd: float, now: datetime)
     return total
 
 
+def invoice_product_id(payment: CryptoPayment) -> int | None:
+    """The product this invoice was opened to buy, or None for a plain wallet top-up.
+
+    Stored in `description` as `buy:<product_id>:<amount>`; a bare top-up keeps the old
+    `topup:<amount>` form. The column is free text and nothing else reads it, so this needs no
+    migration — and an unparseable value degrades to "this was a top-up", which is the safe answer.
+    """
+    parts = (payment.description or "").split(":")
+    if len(parts) >= 2 and parts[0] == "buy":
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+    return None
+
+
 async def render_payment_details(
     session: AsyncSession,
     user_id: int,
     amount_usd: float,
     locale: str,
+    *,
+    purchase_product_id: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Show payment details with wallet address and countdown."""
+    """Show payment details with wallet address and countdown.
+
+    `purchase_product_id` marks an invoice that was opened from a product's checkout rather than
+    from Top Up Wallet. Mechanically the two are identical — both credit the wallet — but they are
+    not the same thing to the person reading the screen, so the invoice labels itself accordingly
+    and its Cancel returns to the product instead of to the top-up menu.
+    """
     monitor = BlockchainMonitor()
     now = datetime.now(UTC)
 
     total_amount = await _unique_total(session, amount_usd, now)
     fee = round(total_amount - amount_usd, 2)
 
+    buying = purchase_product_id is not None
     payment = CryptoPayment(
         user_id=user_id,
         product_amount_minor=int(amount_usd * 100),
         expected_amount=str(total_amount),  # Store total (what they actually send)
         currency="USDT",
         status="PENDING",
-        description=f"topup:{amount_usd}",
+        description=f"buy:{purchase_product_id}:{amount_usd}" if buying else f"topup:{amount_usd}",
         created_at=now,
     )
     session.add(payment)
     await session.flush()
 
     minutes = PAYMENT_TIMEOUT_MINUTES
+    heading = "🔗 <b>Pay for your order</b>" if buying else "🔗 <b>Send Payment</b>"
+    amount_label = "Order Amount" if buying else "Top-Up Amount"
     text = (
-        "🔗 <b>Send Payment</b>\n\n"
+        f"{heading}\n\n"
         f"<b>Network:</b> BNB Smart Chain (BSC)\n"
         f"<b>Token:</b> USDT (BEP-20)\n"
         f"<b>Wallet Address:</b> <code>{monitor.wallet_address}</code>\n\n"
-        f"💰 <b>Top-Up Amount:</b> ${amount_usd:.2f}\n"
+        f"💰 <b>{amount_label}:</b> ${amount_usd:.2f}\n"
         f"🏷️ <b>Service Fee:</b> ${fee:.2f}\n"
         f"📊 <b>Total to Send:</b> <b>${total_amount:.2f} USDT</b>\n\n"
         f"⏱️ <b>Payment expires in:</b> {minutes} minutes\n\n"
@@ -217,7 +259,23 @@ async def on_cancel_topup_payment(query: CallbackQuery, session: AsyncSession, u
         payment.status = "CANCELLED"
         await session.flush()
 
-    text, markup = await render_topup_packages(user.locale)
+    # Cancel means "one step back", and where back *is* depends on where the invoice came from. An
+    # invoice opened from a product's checkout returns to that product — dropping a mid-purchase
+    # buyer onto the Top Up Wallet menu stranded them somewhere they never asked to be, with no
+    # trace of what they had been buying.
+    product_id = invoice_product_id(payment)
+    if product_id is not None:
+        from app.bot.handlers.products.browse import render_product_detail
+
+        await stock_hold_service.release(session, product_id, user.id)
+        rendered = await render_product_detail(session, product_id, user.locale, user_id=user.id)
+        if rendered is not None:
+            text, markup = rendered
+            await query.message.edit_text(text, reply_markup=markup)
+            await query.answer(t("topup.cancelled", user.locale))
+            return
+
+    text, markup = await render_topup_packages(user.locale, balance_minor=await _balance_minor(session, user.id))
     await query.message.edit_text(text, reply_markup=markup)
     await query.answer(t("topup.cancelled", user.locale))
 

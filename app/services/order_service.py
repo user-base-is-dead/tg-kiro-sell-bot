@@ -187,6 +187,62 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
     return PlacedOrder(order=order, order_item=order_item, delivered_payload=delivered_payload)
 
 
+async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order) -> bool:
+    """DM every admin that a hand-fulfilled order is waiting, with a button straight to it.
+
+    Manual fulfilment had no push at all: an order went PROCESSING and sat in the Pending
+    Fulfilment list until an admin happened to open the admin panel and look. From the buyer's side
+    that is indistinguishable from the feature being broken — they get "being prepared" and then
+    nothing, for as long as nobody checks.
+
+    Best-effort by design. The order is already committed to the database and the queue screen is
+    still the source of truth, so a bot blocked by one admin must never fail the purchase. Returns
+    whether at least one admin was actually reached.
+    """
+    import logging
+
+    from aiogram.exceptions import TelegramAPIError
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from app.bot.callbacks import AdminOrderCB
+    from app.core.config import get_settings
+
+    buyer = await UserRepo(session).get_by_id(order.user_id)
+    who = f"@{buyer.username}" if buyer and buyer.username else f"id {order.user_id}"
+    # Re-fetched through the repo for its eager load: `place_order` hands back an Order whose
+    # `items` collection has never been loaded, and touching it here would lazy-load mid-async.
+    full = await OrderRepo(session).get_by_id(order.id) or order
+    items = "\n".join(f"• {item.product_name} x{item.qty}" for item in full.items)
+    text = (
+        "🙋 <b>Manual order awaiting fulfilment</b>\n\n"
+        f"🛒 <code>{order.order_number}</code>\n"
+        f"👤 Buyer: {who}\n"
+        f"{items}\n\n"
+        "The buyer has already paid. Open it to send their content."
+    )
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Fulfill now",
+                    callback_data=AdminOrderCB(action="view", id=order.id).pack(),
+                )
+            ]
+        ]
+    )
+
+    delivered = False
+    for admin_id in get_settings().admin_ids:
+        try:
+            await bot.send_message(admin_id, text, reply_markup=markup)
+            delivered = True
+        except TelegramAPIError as exc:
+            logging.getLogger(__name__).warning(
+                "Manual-order ping to admin %s failed (%s)", admin_id, exc
+            )
+    return delivered
+
+
 async def fulfill_manual_order(
     session: AsyncSession, *, order_id: str, delivery_payload: str, admin_telegram_id: int
 ) -> Order:
