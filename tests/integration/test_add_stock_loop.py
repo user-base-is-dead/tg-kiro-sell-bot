@@ -39,6 +39,9 @@ class _FakeState:
 class _FakeMessage:
     def __init__(self, text: str) -> None:
         self.text = text
+        # A real Message always exposes both; the handler reads html_text so the admin's own
+        # formatting survives into the buyer's copy.
+        self.html_text = text
         self.replies: list[tuple[str, object]] = []
 
     async def answer(self, text: str, reply_markup=None):  # noqa: ANN001 - test double

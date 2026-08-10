@@ -48,7 +48,7 @@ from app.services.product_import import MAX_BYTES, MAX_ROWS, apply_rows, parse_c
 from app.utils.money import format_minor, parse_to_minor
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI
-from app.utils.text import PAD
+from app.utils.text import PAD, as_admin_wrote_it
 
 logger = logging.getLogger(__name__)
 
@@ -802,7 +802,7 @@ async def set_delivery_info(
 async def receive_wizard_stock(
     message: Message, state: FSMContext, session: AsyncSession, user
 ) -> None:
-    payload = (message.text or "").strip()
+    payload = as_admin_wrote_it(message)
     if not payload:
         await message.answer("Send the stock item as a message — or press Skip.")
         return
@@ -885,8 +885,9 @@ async def cancel_stock(message: Message, state: FSMContext) -> None:
 async def receive_stock(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
     # One message = one stock item. Credentials are routinely multi-line (login, password, 2FA
     # code, notes), so splitting on newlines would shred a single account into several unusable
-    # "items". The whole message body is kept verbatim, minus surrounding blank space.
-    payload = (message.text or "").strip()
+    # "items". The whole message body is kept verbatim, minus surrounding blank space — including
+    # its formatting, so a credential the admin sent as a copy-box arrives as one.
+    payload = as_admin_wrote_it(message)
     if not payload:
         await message.answer("Send the stock item as a message, or /cancel:")
         return

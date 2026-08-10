@@ -15,3 +15,17 @@ from __future__ import annotations
 # Uncategorized") while staying under the ~35 where the pad itself wraps on a narrow phone and
 # shows up as an unexplained blank gap under the copy.
 PAD = "⠀" * 30
+
+
+def as_admin_wrote_it(message) -> str:
+    """The admin's message, formatting and all, ready to be re-sent as HTML.
+
+    Whatever they typed is what the buyer gets: a monospace block stays a monospace block (tappable
+    to copy in every Telegram client), bold stays bold, plain text stays plain. The bot used to wrap
+    every delivery in <code> on the buyer's behalf, which forced the copy-box onto content that was
+    never meant to be one and quietly stripped any formatting the admin had applied.
+
+    `html_text` also escapes the literal <, > and & that a password is entitled to contain — the
+    reason this cannot simply be `message.text`.
+    """
+    return (message.html_text or "").strip()

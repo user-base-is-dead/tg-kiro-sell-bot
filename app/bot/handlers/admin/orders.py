@@ -14,9 +14,11 @@ from app.bot.states.order_fulfill_form import OrderFulfillForm
 from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.user_repo import UserRepo
+from app.locales.i18n import t
 from app.services import order_service
 from app.utils.errors import UserError
 from app.utils.money import format_minor
+from app.utils.text import as_admin_wrote_it
 
 router = Router(name="admin.orders")
 router.message.filter(IsAdmin())
@@ -107,7 +109,11 @@ async def cancel_order(query: CallbackQuery, callback_data: AdminOrderCB, sessio
 async def start_fulfill(query: CallbackQuery, callback_data: AdminOrderCB, state: FSMContext) -> None:
     await state.set_state(OrderFulfillForm.payload)
     await state.update_data(order_id=callback_data.id)
-    await query.message.edit_text("✅ Send the delivery content for this order (or /cancel):")
+    await query.message.edit_text(
+        "✅ Send the delivery content for this order (or /cancel):\n\n"
+        "The buyer receives it <b>exactly as you send it</b> — if you want a tappable copy box, "
+        "format it as code yourself; otherwise it arrives as plain text."
+    )
     await query.answer()
 
 
@@ -124,7 +130,7 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
         order = await order_service.fulfill_manual_order(
             session,
             order_id=data["order_id"],
-            delivery_payload=message.text or "",
+            delivery_payload=as_admin_wrote_it(message),
             admin_telegram_id=user.telegram_id,
         )
     except UserError:
@@ -141,9 +147,18 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
     buyer = await UserRepo(session).get_by_id(order.user_id)
     if buyer and buyer.chat_id:
         try:
+            # Word for word the message an auto-delivered buyer gets. A hand-fulfilled order is the
+            # same purchase with a slower shelf behind it, and it used to arrive looking like a
+            # different, more improvised thing — no warranty line, its own heading, its own layout.
+            warranty_days = order.items[0].warranty_days if order.items else 0
             await message.bot.send_message(
                 buyer.chat_id,
-                f"📬 <b>Your order {order.order_number} has been delivered:</b>\n\n<code>{message.text}</code>",
+                t(
+                    "orders.auto_delivery",
+                    buyer.locale,
+                    payload=as_admin_wrote_it(message),
+                    warranty_days=warranty_days,
+                ),
             )
         except Exception:  # noqa: BLE001 — best-effort notify; buyer may have blocked the bot
             await message.answer("⚠️ Couldn't DM the buyer (they may have blocked the bot).")
