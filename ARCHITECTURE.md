@@ -520,13 +520,23 @@ payments/manual.py` + the admin Payments queue) but nothing in the user menu rou
 **Money path**
 
 1. User picks an amount (`$1.00`–`$10,000.00`). A `crypto_payments` row is created with
-   `expected_amount = amount + SERVICE_FEE` ($0.20) — the total the user must actually send.
+   `expected_amount = amount + SERVICE_FEE` ($0.20) — the total the user must actually send. If
+   another *live* invoice already expects that exact total, `_unique_total` walks the fee up a cent
+   at a time until it doesn't: matching is by amount alone, so two identical open totals make the
+   transfer ambiguous and **neither** buyer gets credited. `product_amount_minor` stays the amount
+   asked for, so the extra cents only ever land in the fee.
 2. The screen shows `WALLET_ADDRESS`, the token/network, the fee breakdown, and a 15-minute window
    (`PAYMENT_TIMEOUT_MINUTES`, derived from `created_at` — there is no stored expiry).
 3. `jobs/crypto_payment_checker.py` runs **every 30 s** (APScheduler): it pulls recent BEP-20
-   transfers to the wallet from the **BSCscan** API and matches them against `PENDING` rows.
-4. `services/payments/blockchain_monitor.py` owns the matching: USDT contract address, and a
-   `MATCH_TOLERANCE` of 0.004 so sub-cent float noise doesn't reject a correct payment.
+   transfers to the wallet and matches them against `PENDING` rows.
+4. `services/payments/blockchain_monitor.py` owns the fetch and the matching. It reads `Transfer`
+   logs directly off a **BNB Chain JSON-RPC node** (`BSC_RPC_URL`) via `eth_getLogs`, filtered
+   node-side by the USDT contract and the wallet's `to` topic, over a `LOOKBACK_BLOCKS` window
+   walked in `MAX_BLOCK_SPAN` chunks (providers reject a range wider than their cap outright).
+   `MATCH_TOLERANCE` of 0.004 keeps sub-cent float noise from rejecting a correct payment.
+   *This was BSCscan's `tokentx` API until it was retired — V1 answers "deprecated endpoint" and
+   V2 refuses BNB Chain on the free plan, both as HTTP 200 bodies, so the job saw an empty chain
+   and every payment silently expired. Reading logs from a node takes the indexer out of the path.*
 5. On a match: status → `CONFIRMED`, `tx_hash` stored, wallet credited via `wallet_service` (append-only
    `wallet_transactions` row, idempotency key), user notified. A wrong amount lands in `MISMATCH`
    (user is told to contact support); an untouched window lapses to `EXPIRED`.
@@ -538,8 +548,10 @@ path (`CRYPTO_WEBHOOK_SECRET`) as an alternative to polling.
 matches an expected amount — so amounts must stay unique enough per open window, and `tx_hash` is
 indexed and checked so one transfer can never be credited twice.
 
-**Config** (`core/config.py`, all fail-fast except where noted): `WALLET_ADDRESS`, `BSCSCAN_API_KEY`,
-`CRYPTO_WEBHOOK_SECRET` (defaults to `dev_secret` — must be set in production).
+**Config** (`core/config.py`, all fail-fast except where noted): `WALLET_ADDRESS`, `BSC_RPC_URL`
+(defaults to the public Binance dataseed, which rate-limits `eth_getLogs` — production needs a
+keyed endpoint such as NodeReal/Ankr/QuickNode), `CRYPTO_WEBHOOK_SECRET` (defaults to `dev_secret`
+— must be set in production).
 
 ### Scheduled jobs (`jobs/scheduler.py`)
 

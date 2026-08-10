@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import NavCB
 from app.bot.states.topup_form import TopUpForm
@@ -17,7 +18,7 @@ from app.utils.time import as_utc
 router = Router(name="payments.topup_crypto")
 
 PAYMENT_TIMEOUT_MINUTES = 15
-SERVICE_FEE = 0.2  # USD
+SERVICE_FEE = 0.2  # USD — the base fee; see `_unique_total` for why an invoice may add cents.
 
 
 async def render_topup_packages(locale: str, show_title: bool = True) -> tuple[str, InlineKeyboardMarkup]:
@@ -42,6 +43,32 @@ async def render_topup_packages(locale: str, show_title: bool = True) -> tuple[s
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def _unique_total(session: AsyncSession, amount_usd: float, now: datetime) -> float:
+    """The exact USDT total this invoice must receive, distinct from every other live invoice.
+
+    A transfer is matched to an invoice by amount and nothing else — the chain carries no order id.
+    So two buyers topping up $15.00 at the same time used to be handed the identical total, and the
+    checker refuses to guess between them: it logs "ambiguous" and skips the transfer, leaving both
+    buyers paid and neither credited. Nudging the fee up by a cent per collision makes each live
+    total unique, so every transfer resolves to exactly one invoice.
+
+    Only currently-matchable invoices reserve a total. A cancelled, confirmed or timed-out one is
+    no longer a candidate, so its amount is free again and the fee never drifts upward over time.
+    """
+    cutoff = now - timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
+    result = await session.execute(
+        select(CryptoPayment.expected_amount).where(
+            CryptoPayment.status == "PENDING", CryptoPayment.created_at >= cutoff
+        )
+    )
+    taken = {round(float(a), 2) for a in result.scalars()}
+
+    total = round(amount_usd + SERVICE_FEE, 2)
+    while total in taken:
+        total = round(total + 0.01, 2)
+    return total
+
+
 async def render_payment_details(
     session: AsyncSession,
     user_id: int,
@@ -49,16 +76,11 @@ async def render_payment_details(
     locale: str,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Show payment details with wallet address and countdown."""
-    from app.core.config import get_settings
-
-    settings = get_settings()
     monitor = BlockchainMonitor()
-
     now = datetime.now(UTC)
-    expires_at = now + timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
 
-    # Calculate total with service fee
-    total_amount = amount_usd + SERVICE_FEE
+    total_amount = await _unique_total(session, amount_usd, now)
+    fee = round(total_amount - amount_usd, 2)
 
     payment = CryptoPayment(
         user_id=user_id,
@@ -79,7 +101,7 @@ async def render_payment_details(
         f"<b>Token:</b> USDT (BEP-20)\n"
         f"<b>Wallet Address:</b> <code>{monitor.wallet_address}</code>\n\n"
         f"💰 <b>Top-Up Amount:</b> ${amount_usd:.2f}\n"
-        f"🏷️ <b>Service Fee:</b> ${SERVICE_FEE:.2f}\n"
+        f"🏷️ <b>Service Fee:</b> ${fee:.2f}\n"
         f"📊 <b>Total to Send:</b> <b>${total_amount:.2f} USDT</b>\n\n"
         f"⏱️ <b>Payment expires in:</b> {minutes} minutes\n\n"
         "✅ Payment will be auto-confirmed when received.\n"
@@ -143,11 +165,15 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
         await session.flush()
         text = "❌ <b>Payment Expired</b>\n\nThe payment window has closed. Please start a new top-up."
     elif payment.status == "CONFIRMED":
-        topup_amount = float(payment.expected_amount) - SERVICE_FEE
+        # Derived from the invoice, not recomputed from the base fee: the fee on this specific
+        # invoice may carry disambiguating cents, and `product_amount_minor` is the authoritative
+        # record of what the wallet was actually credited with.
+        topup_amount = payment.product_amount_minor / 100
+        fee = round(float(payment.expected_amount) - topup_amount, 2)
         text = (
             f"✅ <b>Payment Confirmed!</b>\n\n"
             f"Top-Up Credited: ${topup_amount:.2f} USDT\n"
-            f"Service Fee: ${SERVICE_FEE:.2f}\n"
+            f"Service Fee: ${fee:.2f}\n"
             f"Transaction: <code>{payment.tx_hash}</code>\n\n"
             "Your wallet has been credited. Thank you!"
         )

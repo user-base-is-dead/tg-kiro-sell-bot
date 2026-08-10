@@ -22,7 +22,9 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
     try:
         transfers = await monitor.fetch_recent_transfers()
     except Exception as exc:
-        logger.warning("Crypto payment check failed: %s", exc)
+        # Errors here mean no payment can be detected at all, so this is never a warning: a
+        # misconfigured or throttled RPC endpoint went unnoticed for exactly this reason once.
+        logger.error("Crypto payment check failed — no payments can confirm: %s", exc)
         return
 
     async with sessionmaker() as session:

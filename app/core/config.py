@@ -26,7 +26,13 @@ class Settings(BaseSettings):
     encryption_key: str = Field(alias="ENCRYPTION_KEY")
     crypto_webhook_secret: str = Field(default="dev_secret", alias="CRYPTO_WEBHOOK_SECRET")
     wallet_address: str = Field(alias="WALLET_ADDRESS")
-    bscscan_api_key: str = Field(alias="BSCSCAN_API_KEY")
+    # A BNB Chain JSON-RPC endpoint. The default public dataseed answers `eth_blockNumber` but
+    # rate-limits `eth_getLogs`, so a keyed endpoint (NodeReal, Ankr, QuickNode) belongs here in
+    # production — payment detection reads logs on every tick.
+    bsc_rpc_url: str = Field(default="https://bsc-dataseed.binance.org/", alias="BSC_RPC_URL")
+    # How many blocks one `eth_getLogs` request may span. Providers enforce their own cap and
+    # reject anything wider outright, so this is tunable per endpoint rather than hard-coded.
+    bsc_rpc_log_span: int = Field(default=500, alias="BSC_RPC_LOG_SPAN")
 
     environment: str = Field(default="development", alias="ENVIRONMENT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
