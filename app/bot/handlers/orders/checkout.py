@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import OrderCB
 from app.bot.keyboards.common import confirm_row, nav_row
 from app.bot.keyboards.products import category_back_target
+from app.bot.keyboards.styles import NEUTRAL, PRIMARY, SUCCESS, btn
 from app.database.models.user import User
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.wallet_repo import WalletRepo
@@ -18,6 +19,63 @@ from app.utils.money import format_minor
 from app.utils.text import PAD
 
 router = Router(name="orders.checkout")
+
+
+async def render_payment_choice(
+    session: AsyncSession, product_id: int, user: User
+) -> tuple[str, object] | None:
+    """How the buyer wants to pay, before anything is held or debited.
+
+    Crypto does not pay for the order directly. It tops the wallet up and the wallet buys, so
+    place_order stays the only thing that creates an order and the crypto checker job stays a
+    pure wallet-credit path. The shortfall is what gets pre-filled into the top-up.
+    """
+    product = await ProductRepo(session).get_by_id(product_id)
+    if product is None or not product.is_active:
+        return None
+
+    view = await compute_display_status(session, product)
+    if view.display_status.value not in ("IN_STOCK", "LOW_STOCK"):
+        return None
+
+    wallet = await WalletRepo(session).get_or_create(user.id, currency=product.currency)
+    shortfall_minor = max(0, product.price_minor - wallet.balance_minor)
+    covered = shortfall_minor == 0
+
+    price = format_minor(product.price_minor, product.currency)
+    balance = format_minor(wallet.balance_minor, wallet.currency)
+    lines = [
+        "🛒 <b>Choose Payment Method</b>",
+        "",
+        f"{product.name}",
+        f"💰 Price: {price}",
+        f"💳 Wallet balance: {balance}",
+        "",
+    ]
+    if covered:
+        lines.append("Your wallet covers this. Pay from it, or top up with crypto first.")
+    else:
+        short = format_minor(shortfall_minor, product.currency)
+        lines.append(f"⚠️ You are {short} short. Top up with crypto to cover it.")
+
+    rows = [
+        [
+            btn(
+                "💳 Pay from Wallet" if covered else f"💳 Wallet ({balance})",
+                OrderCB(action="wallet", product_id=str(product.id)).pack(),
+                SUCCESS if covered else NEUTRAL,
+            )
+        ],
+        [
+            btn(
+                "💎 Pay with Crypto (USDT)",
+                OrderCB(action="crypto", product_id=str(product.id)).pack(),
+                PRIMARY,
+            )
+        ],
+        nav_row(user.locale, back_target=category_back_target(product.category_id)),
+    ]
+    return "\n".join(lines) + f"\n{PAD}", InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def render_checkout_confirm(session: AsyncSession, product_id: int, user: User) -> tuple[str, object] | None:
@@ -57,6 +115,57 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
         nav_row(user.locale, back_target=category_back_target(product.category_id)),
     ]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(OrderCB.filter(F.action == "wallet"))
+async def on_pay_from_wallet(query: CallbackQuery, callback_data: OrderCB, session: AsyncSession, user: User) -> None:
+    """Wallet route: straight to the existing confirm screen, which is where the hold is taken."""
+    if not query.message:
+        return
+
+    rendered = await render_checkout_confirm(session, int(callback_data.product_id), user)
+    if rendered is None:
+        await query.answer(t("common.unknown_action", user.locale), show_alert=True)
+        return
+    text, markup = rendered
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+
+
+@router.callback_query(OrderCB.filter(F.action == "crypto"))
+async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, session: AsyncSession, user: User) -> None:
+    """Crypto route: open a top-up invoice for the shortfall.
+
+    No hold is taken here. A crypto transfer can take minutes and the hold is five, so holding
+    stock across it would expire mid-payment and fail the purchase after the buyer had already
+    sent funds. The money lands in the wallet either way, so nothing is lost if the item sells
+    out first — the buyer keeps the balance and can spend it on anything.
+    """
+    if not query.message:
+        return
+
+    from app.bot.handlers.payments.topup_crypto import render_payment_details
+
+    product = await ProductRepo(session).get_by_id(int(callback_data.product_id))
+    if product is None or not product.is_active:
+        await query.answer(t("common.unknown_action", user.locale), show_alert=True)
+        return
+
+    wallet = await WalletRepo(session).get_or_create(user.id, currency=product.currency)
+    shortfall_minor = max(0, product.price_minor - wallet.balance_minor)
+    if shortfall_minor == 0:
+        # Already covered — sending them to an invoice for $0.00 would be a dead end.
+        await query.answer(t("orders.wallet_already_covers", user.locale), show_alert=True)
+        return
+
+    text, markup = await render_payment_details(
+        session, user.id, shortfall_minor / 100, user.locale
+    )
+    await query.message.edit_text(
+        text + "\n\n🛒 <b>After this confirms, press Buy Now again to complete the purchase.</b>",
+        reply_markup=markup,
+    )
+    await query.answer()
 
 
 @router.callback_query(OrderCB.filter(F.action == "cancel"))

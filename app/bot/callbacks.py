@@ -43,7 +43,7 @@ class AdminProductCB(CallbackData, prefix="aprod"):
 
 
 class OrderCB(CallbackData, prefix="ord"):
-    action: str  # "confirm" | "cancel" | "view"
+    action: str  # "pay" | "wallet" | "crypto" | "confirm" | "cancel" | "view"
     product_id: str = ""
     order_id: str = ""
     page: int = 1

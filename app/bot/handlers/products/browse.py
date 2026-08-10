@@ -125,9 +125,9 @@ async def on_product(query: CallbackQuery, callback_data: ProductCB, session: As
         return
 
     if callback_data.action == "buy":
-        from app.bot.handlers.orders.checkout import render_checkout_confirm
+        from app.bot.handlers.orders.checkout import render_payment_choice
 
-        rendered = await render_checkout_confirm(session, int(callback_data.id), user)
+        rendered = await render_payment_choice(session, int(callback_data.id), user)
         if rendered is None:
             await query.answer(t("common.unknown_action", user.locale), show_alert=True)
             return

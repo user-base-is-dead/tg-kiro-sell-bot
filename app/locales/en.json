@@ -30,6 +30,10 @@
     "flood": "🐢 You're going a bit fast — please slow down.",
     "page_indicator": "{page}/{total}"
   },
+  "topup": {
+    "cancelled": "Payment cancelled.",
+    "not_received": "⏳ Payment not received yet.\n\nWaiting for blockchain confirmation — this can take a few minutes after you send.\n\n⏱️ Time remaining: {minutes}m {seconds}s"
+  },
   "help": {
     "body": "❓ <b>Help</b>\n\n/start — main menu\n/products — browse the store\n/orders — your order history\n/support — get help from our team\n/language — change language\n/gift — redeem a gift code\n/refer — your referral link\n/warranty — warranty status\n/topup — top up your balance\n/profile — your account\n\nStuck? Use 💬 Support and we'll help you out."
   },
@@ -46,12 +50,19 @@
   "gift": {
     "prompt": "🎁 <b>Free Gift</b>\n\nHave a gift code? Send it here and its value will be added to your wallet instantly.\n\n✏️ Type your code below:",
     "default_description": "Claim your free gift and add instant credit to your wallet!",
-    "invalid_code": "📭 No gifts available right now.",
-    "not_active": "📭 No gifts available right now.",
-    "expired": "📭 No gifts available right now.",
-    "exhausted": "📭 No gifts available right now.",
+    "invalid_code": "📭 <b>No gifts available right now</b>\n\nWe don't have any active gifts at the moment, but we're always adding new rewards and special offers! Check back soon — and keep an eye on your notifications so you don't miss the next one. 🎁",
+    "not_active": "📭 <b>No gifts available right now</b>\n\nWe don't have any active gifts at the moment, but we're always adding new rewards and special offers! Check back soon — and keep an eye on your notifications so you don't miss the next one. 🎁",
+    "expired": "📭 <b>No gifts available right now</b>\n\nWe don't have any active gifts at the moment, but we're always adding new rewards and special offers! Check back soon — and keep an eye on your notifications so you don't miss the next one. 🎁",
+    "exhausted": "📭 <b>No gifts available right now</b>\n\nWe don't have any active gifts at the moment, but we're always adding new rewards and special offers! Check back soon — and keep an eye on your notifications so you don't miss the next one. 🎁",
     "limit_reached": "You've already claimed this gift! 😊 We'll notify you when new gifts are available.",
-    "redeemed": "✅ Redeemed! {amount} added to your balance."
+    "redeemed": "✅ Redeemed! {amount} added to your balance.",
+    "claim": "✅ Claim",
+    "claimed_toast": "✅ Gift claimed!",
+    "none_available_toast": "No active gift available.",
+    "grants_credit": "💰 <b>You get:</b> {amount} wallet credit",
+    "grants_product": "📦 <b>You get:</b> {product}",
+    "redeemed_product": "🎉 <b>Yours!</b>\n\n📦 {product}\n🧾 Order <code>{order_number}</code>\n\n<b>Your item:</b>\n<code>{payload}</code>\n\n⚠️ Save this now — it is shown only once. You can always find the order in 📦 Orders.",
+    "redeemed_product_manual": "🎉 <b>Claimed!</b>\n\n📦 {product}\n🧾 Order <code>{order_number}</code>\n\nOur team is preparing your item and will deliver it here shortly. You can track it in 📦 Orders."
   },
   "support": {
     "menu": "💬 <b>Support</b>\n\nNeed help with an order, a payment, or your wallet? Our team is here for you.\n\n🎫 <b>Create Ticket</b> — describe your issue and we'll get back to you.\n📋 <b>My Tickets</b> — check replies and the status of your past tickets.\n\n⏱️ Typical reply time: within a few hours.",
@@ -61,7 +72,6 @@
     "ask_subject": "Briefly describe your issue (or /cancel):",
     "created": "✅ Ticket <b>{ticket_number}</b> opened. Just reply here to chat with support — we'll get back to you soon.",
     "created_undelivered": "⚠️ Ticket <b>{ticket_number}</b> was saved, but we couldn't reach our support team just now. It is not lost — we'll pick it up as soon as the connection is back.",
-    "left_conversation": "ℹ️ That didn't go to support — you've stepped out of ticket <b>{ticket_number}</b>. Buttons and commands are handled by the bot, not by our team. Just send a normal message here whenever you want to continue the conversation.",
     "ticket_closed": "This ticket is closed. Open a new one if you still need help.",
     "no_tickets": "You don't have any support tickets yet.",
     "closed_notice": "🔒 This ticket has been closed."
@@ -72,6 +82,7 @@
   },
   "orders": {
     "confirm_title": "🛒 <b>Confirm Purchase</b>",
+    "wallet_already_covers": "💳 Your wallet already covers this — pay from it instead.",
     "confirm_body": "{name}\n\n💰 Price: {price}\n💳 Your balance: {balance}\n\nConfirm this purchase?",
     "placed": "✅ Order <code>{order_number}</code> placed!",
     "auto_delivery": "📬 <b>Here's your item:</b>\n\n<code>{payload}</code>\n\n🛡️ Warranty: {warranty_days} days.",
