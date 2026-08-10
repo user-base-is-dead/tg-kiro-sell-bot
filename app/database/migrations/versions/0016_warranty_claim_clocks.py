@@ -41,13 +41,17 @@ CLAIM_GRACE_HOURS = 24
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("warranties") as batch:
-        batch.add_column(sa.Column("claim_deadline_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("claim_remaining_seconds", sa.Integer(), nullable=True))
-        batch.add_column(sa.Column("claim_resolved_at", sa.DateTime(timezone=True), nullable=True))
-        batch.add_column(sa.Column("claim_rejected_at", sa.DateTime(timezone=True), nullable=True))
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    warr_cols = [c["name"] for c in inspector.get_columns("warranties")]
+    if "claim_deadline_at" not in warr_cols:
+        with op.batch_alter_table("warranties") as batch:
+            batch.add_column(sa.Column("claim_deadline_at", sa.DateTime(timezone=True), nullable=True))
+            batch.add_column(sa.Column("claim_remaining_seconds", sa.Integer(), nullable=True))
+            batch.add_column(sa.Column("claim_resolved_at", sa.DateTime(timezone=True), nullable=True))
+            batch.add_column(sa.Column("claim_rejected_at", sa.DateTime(timezone=True), nullable=True))
 
-    op.create_index("ix_warranties_claim_deadline_at", "warranties", ["claim_deadline_at"])
+        op.create_index("ix_warranties_claim_deadline_at", "warranties", ["claim_deadline_at"])
 
     # Dialect-specific because there is no portable "add N hours to a timestamp" or "difference in
     # seconds" expression, and both are needed to reproduce the old implicit rule exactly.

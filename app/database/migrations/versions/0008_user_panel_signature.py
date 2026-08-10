@@ -17,8 +17,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("users") as batch_op:
-        batch_op.add_column(sa.Column("panel_signature", sa.String(32), nullable=True))
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = [c["name"] for c in inspector.get_columns("users")]
+    if "panel_signature" not in columns:
+        with op.batch_alter_table("users") as batch_op:
+            batch_op.add_column(sa.Column("panel_signature", sa.String(32), nullable=True))
 
 
 def downgrade() -> None:

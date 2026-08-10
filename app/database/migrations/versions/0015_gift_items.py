@@ -31,37 +31,46 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
-    stranded = conn.execute(
-        sa.text("SELECT COUNT(*) FROM gift_codes WHERE kind = 'PRODUCT'")
-    ).scalar_one()
-    if stranded:
-        raise RuntimeError(
-            f"{stranded} gift code(s) still grant a catalog product. Disable them in the admin "
-            "panel first — gift codes now carry their own items and cannot point at a product."
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
+    if "gift_codes" in tables:
+        gift_cols = [c["name"] for c in inspector.get_columns("gift_codes")]
+        if "kind" in gift_cols:
+            stranded = conn.execute(
+                sa.text("SELECT COUNT(*) FROM gift_codes WHERE kind = 'PRODUCT'")
+            ).scalar_one()
+            if stranded:
+                raise RuntimeError(
+                    f"{stranded} gift code(s) still grant a catalog product. Disable them in the admin "
+                    "panel first — gift codes now carry their own items and cannot point at a product."
+                )
+
+    if "gift_items" not in tables:
+        op.create_table(
+            "gift_items",
+            sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+            sa.Column("gift_code_id", sa.BigInteger(), sa.ForeignKey("gift_codes.id"), nullable=False),
+            sa.Column("payload", sa.String(length=4096), nullable=False),
+            sa.Column("status", sa.String(length=16), nullable=False, server_default="AVAILABLE"),
+            sa.Column("claimed_by_user_id", sa.BigInteger(), sa.ForeignKey("users.id"), nullable=True),
+            sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
         )
+        op.create_index("ix_gift_items_gift_code_id", "gift_items", ["gift_code_id"])
+        op.create_index("ix_gift_items_claimed_by_user_id", "gift_items", ["claimed_by_user_id"])
+        op.create_index("ix_gift_items_code_status", "gift_items", ["gift_code_id", "status"])
 
-    op.create_table(
-        "gift_items",
-        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
-        sa.Column("gift_code_id", sa.BigInteger(), sa.ForeignKey("gift_codes.id"), nullable=False),
-        sa.Column("payload", sa.String(length=4096), nullable=False),
-        sa.Column("status", sa.String(length=16), nullable=False, server_default="AVAILABLE"),
-        sa.Column("claimed_by_user_id", sa.BigInteger(), sa.ForeignKey("users.id"), nullable=True),
-        sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.create_index("ix_gift_items_gift_code_id", "gift_items", ["gift_code_id"])
-    op.create_index("ix_gift_items_claimed_by_user_id", "gift_items", ["claimed_by_user_id"])
-    op.create_index("ix_gift_items_code_status", "gift_items", ["gift_code_id", "status"])
-
-    # Postgres stores these as native enums, so the new labels must exist before a row can carry
-    # them. SQLite keeps both as VARCHAR and needs nothing.
     if conn.dialect.name == "postgresql":
         with op.get_context().autocommit_block():
             op.execute("ALTER TYPE gift_kind ADD VALUE IF NOT EXISTS 'ITEM'")
-        op.execute("CREATE TYPE gift_item_status AS ENUM ('AVAILABLE', 'DELIVERED')")
+        try:
+            op.execute("CREATE TYPE gift_item_status AS ENUM ('AVAILABLE', 'DELIVERED')")
+        except Exception:
+            pass
 
-    with op.batch_alter_table("gift_codes") as batch_op:
-        batch_op.drop_column("product_id")
+    gift_cols = [c["name"] for c in inspector.get_columns("gift_codes")]
+    if "product_id" in gift_cols:
+        with op.batch_alter_table("gift_codes") as batch_op:
+            batch_op.drop_column("product_id")
 
 
 def downgrade() -> None:

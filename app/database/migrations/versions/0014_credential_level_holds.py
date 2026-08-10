@@ -28,26 +28,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("stock_items") as batch_op:
-        batch_op.add_column(sa.Column("held_by_user_id", sa.BigInteger(), nullable=True))
-        batch_op.add_column(sa.Column("held_at", sa.DateTime(timezone=True), nullable=True))
-        batch_op.add_column(sa.Column("held_until", sa.DateTime(timezone=True), nullable=True))
-        batch_op.create_foreign_key(
-            "fk_stock_items_held_by_user_id", "users", ["held_by_user_id"], ["id"]
-        )
-        batch_op.create_index("ix_stock_items_held_by_user_id", ["held_by_user_id"])
-        # The expiry sweep is `WHERE status = 'HELD' AND held_until <= now`, on every tick.
-        batch_op.create_index("ix_stock_items_status_held_until", ["status", "held_until"])
-
-    # Postgres stores StockStatus as a native enum, so the new label has to be declared before any
-    # row can carry it. SQLite keeps it as VARCHAR and needs nothing. ALTER TYPE cannot run inside a
-    # transaction block on older servers, hence the autocommit block.
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    stock_cols = [c["name"] for c in inspector.get_columns("stock_items")]
+    if "held_by_user_id" not in stock_cols:
+        with op.batch_alter_table("stock_items") as batch_op:
+            batch_op.add_column(sa.Column("held_by_user_id", sa.BigInteger(), nullable=True))
+            batch_op.add_column(sa.Column("held_at", sa.DateTime(timezone=True), nullable=True))
+            batch_op.add_column(sa.Column("held_until", sa.DateTime(timezone=True), nullable=True))
+            batch_op.create_foreign_key(
+                "fk_stock_items_held_by_user_id", "users", ["held_by_user_id"], ["id"]
+            )
+            batch_op.create_index("ix_stock_items_held_by_user_id", ["held_by_user_id"])
+            # The expiry sweep is `WHERE status = 'HELD' AND held_until <= now`, on every tick.
+            batch_op.create_index("ix_stock_items_status_held_until", ["status", "held_until"])
+
     if bind.dialect.name == "postgresql":
         with op.get_context().autocommit_block():
             op.execute("ALTER TYPE stock_status ADD VALUE IF NOT EXISTS 'HELD'")
 
-    op.drop_table("order_holds")
+    if "order_holds" in inspector.get_table_names():
+        op.drop_table("order_holds")
 
 
 def downgrade() -> None:
