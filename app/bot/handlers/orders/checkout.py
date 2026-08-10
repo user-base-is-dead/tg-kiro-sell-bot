@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import OrderCB
 from app.bot.keyboards.common import confirm_row, nav_row
+from app.bot.keyboards.products import category_back_target
 from app.database.models.user import User
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.wallet_repo import WalletRepo
@@ -14,6 +15,7 @@ from app.services import order_service, order_hold_service
 from app.services.catalog_service import compute_display_status
 from app.utils.errors import UserError
 from app.utils.money import format_minor
+from app.utils.text import PAD
 
 router = Router(name="orders.checkout")
 
@@ -44,6 +46,7 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
             balance=format_minor(wallet.balance_minor, wallet.currency),
         )
         + f"\n\n⏱️ <b>Payment expires in:</b> {minutes}m {seconds}s"
+        + f"\n{PAD}"
     )
     rows = [
         confirm_row(
@@ -51,7 +54,7 @@ async def render_checkout_confirm(session: AsyncSession, product_id: int, user: 
             OrderCB(action="confirm", product_id=str(product.id)).pack(),
             OrderCB(action="cancel", product_id=str(product.id)).pack(),
         ),
-        nav_row(user.locale, back_target=f"cat-{product.category_id}"),
+        nav_row(user.locale, back_target=category_back_target(product.category_id)),
     ]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 

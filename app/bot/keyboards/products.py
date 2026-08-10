@@ -92,11 +92,19 @@ def product_list(views: list[ProductView], category_id: int, page: Page, locale:
     return with_nav(rows, locale, back_target="categories")
 
 
+def category_back_target(category_id: int | None) -> str:
+    """Back token for a screen showing one product.
+
+    nav.py resolves this with `int(target.removeprefix("cat-"))`, so a product filed outside every
+    category cannot use the "cat-" form at all — `cat-None` raises ValueError there and the user
+    gets the generic "something went wrong" alert instead of a screen. Loose products go back to
+    the store root, which is where they are listed anyway.
+    """
+    return f"cat-{category_id}" if category_id is not None else "categories"
+
+
 def product_detail(product: Product, view: ProductView, locale: str, category_id: int | None):
     rows: list[list[InlineKeyboardButton]] = []
     if view.display_status.value in ("IN_STOCK", "LOW_STOCK"):
         rows.append([btn("🛒 Buy Now", ProductCB(action="buy", id=str(product.id)).pack(), SUCCESS)])
-    # nav.py parses "cat-<int>"; a product with no category has no folder to return to, so Back
-    # goes to the store root rather than building an unparseable "cat-None".
-    target = f"cat-{category_id}" if category_id is not None else "categories"
-    return with_nav(rows, locale, back_target=target)
+    return with_nav(rows, locale, back_target=category_back_target(category_id))

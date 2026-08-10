@@ -16,6 +16,7 @@ from app.services.catalog_service import compute_display_status
 from app.services import order_hold_service
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI, STATUS_LABEL
+from app.utils.text import PAD
 
 router = Router(name="products.browse")
 
@@ -29,7 +30,7 @@ async def render_categories(session: AsyncSession, locale: str) -> tuple[str, ob
     if not categories and not loose:
         return "🛍️ <b>STORE</b>\n\n💳 Premium products available now! Pay with crypto (💎 USDT/BNB) and get instant delivery. Browse categories or visit /products to see all available items.", category_grid([], locale)
     heading = "Choose a category:" if categories else "Available now:"
-    return f"🛍️ <b>STORE</b>\n\n{heading}", category_grid(categories, locale, loose=loose)
+    return f"🛍️ <b>STORE</b>\n\n{heading}\n{PAD}", category_grid(categories, locale, loose=loose)
 
 
 async def render_product_list(
@@ -56,7 +57,7 @@ async def render_product_list(
         )
         text = f"{emoji} <b>{category.name.upper()}</b>\n\n{lines}"
 
-    return text, product_list(views, category_id, page, locale)
+    return f"{text}\n{PAD}", product_list(views, category_id, page, locale)
 
 
 async def render_product_detail(session: AsyncSession, product_id: int, locale: str, user_id: int | None = None) -> tuple[str, object] | None:
@@ -91,6 +92,7 @@ async def render_product_detail(session: AsyncSession, product_id: int, locale: 
         f"{stock_line}"
         + (f"🛡️ Warranty: {product.warranty_days} Days\n" if product.warranty_days else "")
         + f"\n{status_line}{hold_line}"
+        + f"\n{PAD}"
     )
     return text, product_detail(product, view, locale, product.category_id)
 
