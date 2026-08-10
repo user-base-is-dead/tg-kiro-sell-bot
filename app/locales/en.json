@@ -87,7 +87,6 @@
   },
   "orders": {
     "confirm_title": "🛒 <b>Confirm Purchase</b>",
-    "wallet_already_covers": "💳 Your wallet already covers this — pay from it instead.",
     "confirm_body": "{name}\n\n💰 Price: {price}\n💳 Your balance: {balance}\n\nConfirm this purchase?",
     "placed": "✅ Order <code>{order_number}</code> placed!",
     "auto_delivery": "📬 <b>Here's your item:</b>\n\n<code>{payload}</code>\n\n🛡️ Warranty: {warranty_days} days.",

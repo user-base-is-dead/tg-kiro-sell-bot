@@ -445,7 +445,8 @@ async def _show_step(
 
     if step == "stock":
         await send(
-            f"{head}Send the stock items — licence keys or account credentials, <b>one per line</b>. "
+            f"{head}Send the stock item — a licence key, or account credentials on as many lines "
+            "as you need. <b>One message = one item.</b> "
             "They are encrypted before they touch the database.\n\n"
             "Skip to create the product OUT OF STOCK and add them later.",
             reply_markup=_step_keyboard("stock", extra=[[btn("⏭️ Skip", "pskip:stock", PRIMARY)]]),
@@ -670,10 +671,11 @@ async def set_delivery_info(
 async def receive_wizard_stock(
     message: Message, state: FSMContext, session: AsyncSession, user
 ) -> None:
-    lines = [line.strip() for line in (message.text or "").splitlines() if line.strip()]
-    if not lines:
-        await message.answer("Send at least one stock item, one per line — or press Skip.")
+    payload = (message.text or "").strip()
+    if not payload:
+        await message.answer("Send the stock item as a message — or press Skip.")
         return
+    lines = [payload]
     await _finish_product(
         message, state, session, stock_lines=lines, admin_id=user.telegram_id, edit=False
     )
@@ -699,9 +701,9 @@ async def _add_stock_screen(
         f"📦 <b>Add Stock</b> — {name}\n\n"
         f"{note}"
         f"In stock now: <b>{in_stock}</b>\n\n"
-        "Send the stock items — licence keys or account credentials, <b>one per line</b>. "
-        "Paste as many as you like in a single message; they are encrypted before they touch "
-        "the database.\n\n"
+        "Send the stock item — a licence key, or account credentials on as many lines as you "
+        "need. <b>One message = one item</b>, so multi-line logins stay together. They are "
+        "encrypted before they touch the database.\n\n"
         "Keep sending messages to add more, or press 🔙 Back when you're done.",
         InlineKeyboardMarkup(
             inline_keyboard=[
@@ -730,11 +732,14 @@ async def cancel_stock(message: Message, state: FSMContext) -> None:
 
 @router.message(StockUploadForm.payloads)
 async def receive_stock(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
-    text = message.text or ""
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        await message.answer("Send at least one non-empty line, or /cancel:")
+    # One message = one stock item. Credentials are routinely multi-line (login, password, 2FA
+    # code, notes), so splitting on newlines would shred a single account into several unusable
+    # "items". The whole message body is kept verbatim, minus surrounding blank space.
+    payload = (message.text or "").strip()
+    if not payload:
+        await message.answer("Send the stock item as a message, or /cancel:")
         return
+    lines = [payload]
 
     data = await state.get_data()
     product_id = data["product_id"]

@@ -64,25 +64,27 @@ async def _make_product(session) -> int:
 
 
 @pytest.mark.asyncio
-async def test_a_batch_is_added_and_the_prompt_comes_straight_back(sqlite_sessionmaker):
+async def test_a_multi_line_credential_is_one_item(sqlite_sessionmaker):
+    """A login is a login even when it spans four lines — splitting it would shred one account
+    into several unusable fragments."""
     async with sqlite_sessionmaker() as session:
         product_id = await _make_product(session)
         await session.commit()
 
     async with sqlite_sessionmaker() as session:
         state = _FakeState({"product_id": product_id})
-        message = _FakeMessage("KEY-1\nKEY-2\nKEY-3")
+        message = _FakeMessage("user@mail.com\nhunter2\n2FA: 123456")
 
         await receive_stock(message, state, session, _admin())
         await session.commit()
 
-        assert await ProductRepo(session).available_stock_count(product_id) == 3
+        assert await ProductRepo(session).available_stock_count(product_id) == 1
         assert not state.cleared, "the form must stay open so the next message adds more"
 
         text, markup = message.replies[-1]
-        assert "Added <b>3</b> item(s)" in text, "the batch is confirmed"
+        assert "Added <b>1</b> item(s)" in text, "the item is confirmed"
         assert "Add Stock" in text, "and the prompt is shown again"
-        assert "In stock now: <b>3</b>" in text, "with a running total"
+        assert "In stock now: <b>1</b>" in text, "with a running total"
         back = [b for row in markup.inline_keyboard for b in row]
         assert any("Back" in b.text for b in back), "Back is the way out"
 
@@ -97,14 +99,14 @@ async def test_successive_messages_keep_accumulating(sqlite_sessionmaker):
     async with sqlite_sessionmaker() as session:
         state = _FakeState({"product_id": product_id})
 
-        await receive_stock(_FakeMessage("KEY-1\nKEY-2"), state, session, _admin())
-        await receive_stock(_FakeMessage("KEY-3"), state, session, _admin())
-        last = _FakeMessage("KEY-4\nKEY-5")
+        await receive_stock(_FakeMessage("KEY-1"), state, session, _admin())
+        await receive_stock(_FakeMessage("KEY-2"), state, session, _admin())
+        last = _FakeMessage("login\npassword")
         await receive_stock(last, state, session, _admin())
         await session.commit()
 
-        assert await ProductRepo(session).available_stock_count(product_id) == 5
-        assert "In stock now: <b>5</b>" in last.replies[-1][0]
+        assert await ProductRepo(session).available_stock_count(product_id) == 3
+        assert "In stock now: <b>3</b>" in last.replies[-1][0]
         assert not state.cleared
 
 

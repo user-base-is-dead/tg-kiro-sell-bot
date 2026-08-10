@@ -90,7 +90,7 @@ async def test_the_whole_wizard_can_be_driven_to_a_live_product(
         await feed(_tap("pmode:auto", bot))             # tap: auto, not typed "auto"
         await feed(_tap("pwar:30", bot))                # tap: warranty preset
         await feed(_tap("pskip:delivery_info", bot))    # tap: skip delivery info
-        await feed(_type("KEY-1\nKEY-2\nKEY-3", bot))   # type: the three licence keys
+        await feed(_type("KEY-1", bot))                 # type: the first licence key
         await session.commit()
 
     assert await ctx.get_state() is None, "the wizard did not close"
@@ -107,7 +107,7 @@ async def test_the_whole_wizard_can_be_driven_to_a_live_product(
         assert product.warranty_days == 30
 
         view = await compute_display_status(session, product)
-        assert view.available_stock == 3
+        assert view.available_stock == 1
         assert view.display_status is not ProductStatus.OUT_OF_STOCK, "born dead again"
 
 

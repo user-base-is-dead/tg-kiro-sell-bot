@@ -54,7 +54,10 @@ async def render_payment_choice(
         "",
     ]
     if covered:
-        lines.append("Your wallet covers this. Pay from it, or top up with crypto first.")
+        lines.append(
+            "Your wallet covers this. Pay from it, or pay the full price with crypto to keep "
+            "your balance untouched."
+        )
     else:
         short = format_minor(shortfall_minor, product.currency)
         lines.append(f"⚠️ You are {short} short. Top up with crypto to cover it.")
@@ -176,11 +179,13 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
         return
 
     wallet = await WalletRepo(session).get_or_create(user.id, currency=product.currency)
+    # A covered wallet is not a reason to refuse crypto. Plenty of buyers keep a balance on purpose
+    # — saved for a bigger purchase, or just topped up for later — and would rather pay this one on
+    # chain than eat into it. So when the wallet already covers the price we invoice the FULL price
+    # instead of a $0.00 dead end: the top-up lands in the wallet, the purchase spends the same
+    # amount back out, and the balance they were protecting ends up exactly where it started.
     shortfall_minor = max(0, product.price_minor - wallet.balance_minor)
-    if shortfall_minor == 0:
-        # Already covered — sending them to an invoice for $0.00 would be a dead end.
-        await query.answer(t("orders.wallet_already_covers", user.locale), show_alert=True)
-        return
+    invoice_minor = shortfall_minor or product.price_minor
 
     held = await stock_hold_service.hold_one(session, product.id, user.id)
     if held is None:
@@ -188,7 +193,7 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
         return
 
     text, markup = await render_payment_details(
-        session, user.id, shortfall_minor / 100, user.locale
+        session, user.id, invoice_minor / 100, user.locale
     )
     await query.message.edit_text(
         text + "\n\n🛒 <b>After this confirms, press Buy Now again to complete the purchase.</b>",
