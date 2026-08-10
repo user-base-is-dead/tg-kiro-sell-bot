@@ -1,16 +1,22 @@
-"""Create the schema on a brand-new database, then mark the migration chain as applied.
+"""Bring the database to head, whether it is brand new or an existing install.
 
-`alembic upgrade head` does NOT work on an empty database: it dies at revision 0007 with
-`duplicate column name: description`, because the 0001 baseline already creates a column that 0007
-goes on to add. The chain is only replayable from a database that predates the revision you are
-applying, so it is fine for upgrading an existing install and useless for creating a fresh one.
+One entrypoint for both cases, because getting it wrong in either direction is silently
+destructive and the caller (docker-compose, a deploy script) has no way to tell them apart.
 
-This does what a fresh install actually needs: build every table from the SQLAlchemy models (which
-are the real source of truth for the current schema), then `stamp` the alembic version table at head
-so future migrations apply cleanly on top.
+  Fresh database  -> build every table from the SQLAlchemy models, then `stamp` head.
+                     `alembic upgrade head` CANNOT do this: it dies at revision 0007 with
+                     `duplicate column name: description`, because the 0001 baseline already
+                     creates a column that 0007 goes on to add. The chain is only replayable from
+                     a database that predates the revision being applied.
 
-Safe to re-run: `create_all` skips tables that already exist, and stamping is idempotent. It will
-not upgrade an existing older database — use `alembic upgrade head` for that.
+  Existing database -> plain `alembic upgrade head`, which is exactly what it is for.
+                     Creating tables from the models here would add missing TABLES but never
+                     missing COLUMNS, and stamping head afterwards would then swear the schema is
+                     current when it is not. That is the `no such column: warranties.claim_deadline_at`
+                     failure: code expecting revision 0016 against a database still shaped like 0015.
+
+"Existing" means the `alembic_version` table is present. A database with tables but no
+`alembic_version` is neither case and is left alone rather than guessed at.
 
     python -m scripts.bootstrap_db
 """
@@ -25,38 +31,58 @@ from alembic.config import Config
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import app.database.models  # noqa: F401  — importing registers every model on Base.metadata
+import app.database.models  # noqa: F401  - importing registers every model on Base.metadata
 from app.core.config import get_settings
 from app.database.base import Base
 
+ALEMBIC_INI = "alembic.ini"
 
-async def _create_schema(database_url: str) -> tuple[int, bool]:
+
+async def _inspect_tables(database_url: str) -> list[str]:
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as conn:
+            return await conn.run_sync(lambda c: inspect(c).get_table_names())
+    finally:
+        await engine.dispose()
+
+
+async def _create_all(database_url: str) -> int:
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as conn:
-            existing = await conn.run_sync(lambda c: inspect(c).get_table_names())
             await conn.run_sync(Base.metadata.create_all)
-            after = await conn.run_sync(lambda c: inspect(c).get_table_names())
+            return len(await conn.run_sync(lambda c: inspect(c).get_table_names()))
     finally:
         await engine.dispose()
-    return len(after), bool(existing)
 
 
 def main() -> int:
-    settings = get_settings()
-    url = settings.database_url
+    url = get_settings().database_url
+    # Never print the URL itself: it carries the database password.
+    print(f"Database bootstrap (dialect: {url.split(':', 1)[0]})")
 
-    # Never print the URL: it carries the database password.
-    print(f"Bootstrapping database (dialect: {url.split(':', 1)[0]})")
+    tables = asyncio.run(_inspect_tables(url))
+    cfg = Config(ALEMBIC_INI)
 
-    table_count, had_tables = asyncio.run(_create_schema(url))
-    if had_tables:
-        print("WARN: Database already had tables - created any that were missing and left the rest alone.")
-        print("WARN: If this is an existing install you want to UPGRADE, stop and run `alembic upgrade head`.")
-    print(f"OK: Schema ready: {table_count} tables")
+    if "alembic_version" in tables:
+        print(f"Existing install detected ({len(tables)} tables) - running migrations")
+        command.upgrade(cfg, "head")
+        print("OK: Migrations applied, database is at head")
+        return 0
 
-    command.stamp(Config("alembic.ini"), "head")
-    print("OK: Alembic stamped at head - future migrations will apply on top")
+    if tables:
+        print(f"ERROR: Found {len(tables)} tables but no alembic_version table.")
+        print("ERROR: Refusing to guess. Either point DATABASE_URL at an empty database,")
+        print("ERROR: or stamp the revision this schema actually matches and re-run.")
+        return 1
+
+    print("Fresh database - creating schema from models")
+    table_count = asyncio.run(_create_all(url))
+    print(f"OK: Schema created: {table_count} tables")
+
+    command.stamp(cfg, "head")
+    print("OK: Stamped at head - future migrations will apply on top")
     return 0
 
 

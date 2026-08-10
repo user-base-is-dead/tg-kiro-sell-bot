@@ -9,22 +9,47 @@ services:
       - pg_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    # `depends_on` alone only waits for the container to START, not for Postgres to accept
+    # connections. Without this the bot's first act -- opening the database -- raced the server
+    # coming up and lost, on every fresh deploy.
+    #
+    # It runs a real query rather than `pg_isready`, which is not enough on a FIRST boot: the
+    # official entrypoint starts a temporary server to run initdb, and pg_isready happily reports
+    # that one as ready before POSTGRES_DB has been created. Measured, not guessed -- the bot then
+    # got `InvalidCatalogNameError: database "store_bot" does not exist`. Selecting from the
+    # database itself cannot pass until the database genuinely exists.
+    healthcheck:
+      test: ["CMD-SHELL", "psql -U postgres -d store_bot -c 'select 1' || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   bot:
     build: .
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/store_bot
       REDIS_URL: redis://redis:6379/0
-    command: sh -c "alembic upgrade head && python -m app.main"
+    # Not `alembic upgrade head`: on a fresh volume that dies at revision 0007 with
+    # `duplicate column name: description`, so a first deploy never got off the ground. The
+    # bootstrap picks the right path for a new vs existing database and exits non-zero if it
+    # cannot tell, which `&&` turns into "do not start the bot against a schema we are unsure of".
+    command: sh -c "python -m scripts.bootstrap_db && python -m app.main"
     restart: unless-stopped
 
 volumes:
