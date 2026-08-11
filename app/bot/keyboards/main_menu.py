@@ -4,26 +4,25 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.callbacks import LangCB, NavCB
 from app.bot.keyboards.common import with_nav
-from app.bot.keyboards.styles import PRIMARY, btn
+from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
 from app.core.config import get_settings
 from app.locales.i18n import supported_locales, t
 
 _LOCALE_LABEL = {"en": "🇬🇧 English"}
 
-_MENU_TARGETS = (
-    "categories",
-    "orders",
-    "profile",
-    "topup",
-    "warranty",
-    "refer",
-    "gift",
-    "support",
-    "admin_panel",
-)
-
-# The inline menu is one flat blue.
-_STYLE = dict.fromkeys(_MENU_TARGETS, PRIMARY)
+# Green for the ways in (browse, talk to us, put money on the account), red for the two attention
+# grabbers, blue for everything else.
+_STYLE = {
+    "categories": SUCCESS,
+    "support": SUCCESS,
+    "topup": SUCCESS,
+    "gift": DANGER,
+    "admin_panel": DANGER,
+    "profile": PRIMARY,
+    "refer": PRIMARY,
+    "orders": PRIMARY,
+    "warranty": PRIMARY,
+}
 
 
 def main_inline_keyboard(locale: str, *, is_admin: bool) -> InlineKeyboardMarkup:
@@ -36,10 +35,10 @@ def main_inline_keyboard(locale: str, *, is_admin: bool) -> InlineKeyboardMarkup
         return btn(t(key, locale), NavCB(target=target).pack(), _STYLE[target])
 
     rows = [
-        [_btn("menu.products", "categories"), _btn("menu.orders", "orders")],
+        [_btn("menu.products", "categories"), _btn("menu.support", "support")],
         [_btn("menu.profile", "profile"), _btn("menu.topup", "topup")],
-        [_btn("menu.gift", "gift"), _btn("menu.refer", "refer")],
-        [_btn("menu.warranty", "warranty"), _btn("menu.support", "support")],
+        [_btn("menu.gift", "gift"), _btn("menu.warranty", "warranty")],
+        [_btn("menu.orders", "orders"), _btn("menu.refer", "refer")],
     ]
     # A url button, not a callback one: it opens the group directly instead of costing the user a
     # round trip through the bot. Skipped when no group is configured, so the row is never dead.

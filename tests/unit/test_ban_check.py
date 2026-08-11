@@ -98,7 +98,7 @@ async def test_a_banned_user_loses_every_other_command(command: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("label", ["🚀 Start", "🛍️ Products", "💬 Support"])
+@pytest.mark.parametrize("label", ["🚀 Start", "🛍️ Products", "💬 Live Chat"])
 async def test_the_allowed_panel_buttons_still_work(label: str) -> None:
     assert await _run(_Update(message=_Message(label)), _banned())
 

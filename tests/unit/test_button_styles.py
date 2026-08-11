@@ -36,10 +36,11 @@ def test_admin_row_is_only_present_for_admins() -> None:
     assert not any("Admin" in label for label in user_labels)
 
 
-def test_main_menu_is_one_flat_color() -> None:
-    # A lone styled row among unstyled ones was the unreadable case that started this: the menu is
-    # uniformly blue, url button included.
-    assert set(_styles(main_inline_keyboard("en", is_admin=True))) == {PRIMARY}
+def test_every_main_menu_button_is_styled() -> None:
+    # A lone unstyled button among styled ones was the unreadable case that started this. The menu
+    # is no longer one flat color, but nothing in it may fall back to the transparent default —
+    # url button included.
+    assert None not in _styles(main_inline_keyboard("en", is_admin=True))
 
 
 def test_top_level_screens_offer_exactly_one_way_back() -> None:
