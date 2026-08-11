@@ -5,14 +5,14 @@ import logging
 from aiogram import Router
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import LinkPreviewOptions, Message
+from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.panel import panel_markup
-from app.core.config import get_settings
+from app.bot.texts import NO_PREVIEW, home_body
 from app.database.models.user import User
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
@@ -72,13 +72,8 @@ async def _send_welcome(
             user.telegram_id, locale, is_admin=is_admin, force=force_panel
         ),
     )
-    group_url = get_settings().community_group_url.strip()
-    body = t("welcome.subtitle", locale, name=name)
-    if group_url:
-        body += t("welcome.community", locale, group_url=group_url)
-
     await message.answer(
-        body,
+        home_body(locale, name),
         reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
+        link_preview_options=NO_PREVIEW,
     )

@@ -7,10 +7,11 @@ from app.database.repositories.user_repo import UserRepo
 
 
 async def _seed(sessionmaker, count: int) -> None:
-    """Inserted newest-first on purpose, so an ordering bug cannot pass by accident."""
+    """Inserted oldest-first on purpose, so an ordering bug cannot pass by accident: user000 is the
+    oldest signup and goes in first, which is the opposite of the order the list must show."""
     base = datetime(2026, 1, 1, tzinfo=UTC)
     async with sessionmaker() as session:
-        for i in reversed(range(count)):
+        for i in range(count):
             session.add(
                 User(
                     telegram_id=1000 + i,
@@ -24,14 +25,15 @@ async def _seed(sessionmaker, count: int) -> None:
         await session.commit()
 
 
-async def test_users_are_listed_oldest_first(sqlite_sessionmaker) -> None:
-    """Asked for explicitly: top of the list is the oldest member, bottom is the newest."""
+async def test_users_are_listed_newest_first(sqlite_sessionmaker) -> None:
+    """Asked for explicitly: the newest signups fill page 1, the oldest sit on the last page. An
+    admin opens this screen to look at who just arrived, and that must not cost them any paging."""
     await _seed(sqlite_sessionmaker, 5)
 
     async with sqlite_sessionmaker() as session:
         page = await UserRepo(session).list_page(offset=0, limit=20)
 
-    assert [u.username for u in page] == ["user000", "user001", "user002", "user003", "user004"]
+    assert [u.username for u in page] == ["user004", "user003", "user002", "user001", "user000"]
 
 
 async def test_a_page_holds_twenty_and_the_next_page_continues(sqlite_sessionmaker) -> None:
@@ -50,9 +52,9 @@ async def test_a_page_holds_twenty_and_the_next_page_continues(sqlite_sessionmak
     assert len(second) == 20
     assert len(third) == 5, "the last page holds the remainder"
 
-    assert first[0].username == "user000", "page 1 starts at the oldest"
-    assert second[0].username == "user020", "page 2 picks up where page 1 stopped"
-    assert third[-1].username == "user044", "the last row is the newest member"
+    assert first[0].username == "user044", "page 1 starts at the newest"
+    assert second[0].username == "user024", "page 2 picks up where page 1 stopped"
+    assert third[-1].username == "user000", "the last row is the oldest member"
 
     seen = [u.username for u in first + second + third]
     assert len(set(seen)) == 45, "a paging bug would repeat or drop rows"

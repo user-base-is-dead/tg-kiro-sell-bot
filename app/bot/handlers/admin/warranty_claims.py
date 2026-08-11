@@ -13,6 +13,7 @@ from app.database.models.order import Warranty, WarrantyStatus
 from app.database.models.user import User
 from app.database.repositories.user_repo import UserRepo
 from app.database.repositories.warranty_repo import WarrantyRepo
+from app.services.support_service import close_claim_ticket
 from app.services.warranty_service import format_duration, now_utc, reject_claim, resolve_claim
 from app.utils.time import as_utc
 
@@ -71,6 +72,10 @@ async def approve_warranty_claim(message: Message, session: AsyncSession, user: 
     now = now_utc()
     outcome = resolve_claim(warranty, at=now)
     await session.flush()
+    # The claim's own thread ends with the claim — staff should never need a second /close for it.
+    await close_claim_ticket(
+        message.bot, session, ticket_id=warranty.claim_ticket_id, reason=f"Warranty claim #{warranty.id} resolved"
+    )
 
     if outcome.granted_seconds <= 0:
         # The original warranty ran out while the claim sat in review. Resolving the claim does not
@@ -127,6 +132,9 @@ async def reject_warranty_claim(message: Message, session: AsyncSession, user: U
 
     outcome = reject_claim(warranty, reason=reason, at=now_utc())
     await session.flush()
+    await close_claim_ticket(
+        message.bot, session, ticket_id=warranty.claim_ticket_id, reason=f"Warranty claim #{warranty.id} rejected"
+    )
 
     if outcome.granted_seconds <= 0:
         await _notify_customer(

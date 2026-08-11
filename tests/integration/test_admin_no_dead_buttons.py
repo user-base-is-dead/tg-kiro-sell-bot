@@ -161,6 +161,60 @@ async def test_every_button_on_the_admin_panel_routes_somewhere(
         assert not dead, f"dead buttons on the admin panel: {dead}"
 
 
+RENDERING_METHODS = {
+    "SendMessage",
+    "EditMessageText",
+    "EditMessageMedia",
+    "EditMessageCaption",
+    "SendPhoto",
+    "SendDocument",
+    "AnswerCallbackQuery",  # only counts when it carries an alert — see _rendered_something
+}
+
+
+def _rendered_something(bot) -> bool:
+    """Did the tap actually put a screen in front of the admin?
+
+    "Routes somewhere" is too weak a bar. A decorator can land on the wrong function — a sync
+    helper that builds a string, say — and aiogram will happily call it, take the returned string
+    as the handled result, and send nothing. The router reports the button as alive; the admin sees
+    a button that does nothing. Only an outgoing Telegram call proves otherwise, and a bare
+    `answer()` with no text is not one: that is the silent acknowledgement, not a screen.
+    """
+    for call in bot.call_args_list:
+        if not call.args:
+            continue
+        method = call.args[0]
+        name = type(method).__name__
+        if name == "AnswerCallbackQuery":
+            if getattr(method, "text", None):
+                return True
+            continue
+        if name in RENDERING_METHODS:
+            return True
+    return False
+
+
+async def test_every_button_on_the_admin_panel_actually_opens_a_screen(
+    dispatcher: Dispatcher, sqlite_sessionmaker, bot, ctx
+) -> None:
+    """The regression this exists for: 🛒 Orders was registered on `_list_text`, the sync helper
+    that formats the list header, instead of on `list_pending`. aiogram called it, got a string
+    back, counted the update as handled — and the admin's tap did nothing at all."""
+    from app.bot.handlers.admin.panel import _panel_keyboard
+
+    async with sqlite_sessionmaker() as session:
+        silent = []
+        for data in _callbacks(_panel_keyboard("en")):
+            await ctx.clear()
+            bot.reset_mock()
+            await dispatcher.feed_update(bot, _tap(data, bot), session=session, user=ADMIN)
+            if not _rendered_something(bot):
+                silent.append(data)
+
+        assert not silent, f"admin panel buttons that route but draw nothing: {silent}"
+
+
 async def test_every_category_wizard_button_routes_somewhere(
     dispatcher: Dispatcher, sqlite_sessionmaker, bot, ctx
 ) -> None:

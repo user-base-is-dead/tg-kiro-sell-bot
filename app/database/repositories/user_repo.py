@@ -29,10 +29,15 @@ class UserRepo:
         return result.scalar_one_or_none()
 
     async def list_page(self, *, offset: int, limit: int) -> list[User]:
-        """Oldest signup first, so the list reads as a join history: row 1 is member #1 and the
-        bottom row is the newest arrival. Ordered by id as a tiebreak because first_seen_at carries
-        a server default and several rows can share a timestamp on a bulk insert."""
-        stmt = select(User).order_by(User.first_seen_at, User.id).offset(offset).limit(limit)
+        """Newest signup first, so page 1 is who just arrived and the oldest members sit on the
+        last page. An admin opens this screen to look at recent activity, and burying that behind
+        every page of history made the screen useless on a store with thousands of users.
+
+        Ordered by id as a tiebreak because first_seen_at carries a server default and several rows
+        can share a timestamp on a bulk insert — without it, paging could repeat or drop rows."""
+        stmt = (
+            select(User).order_by(User.first_seen_at.desc(), User.id.desc()).offset(offset).limit(limit)
+        )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 

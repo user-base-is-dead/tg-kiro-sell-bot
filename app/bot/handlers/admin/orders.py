@@ -51,8 +51,6 @@ def _detail_keyboard(order_id: str) -> InlineKeyboardMarkup:
     )
 
 
-@router.callback_query(AdminOrderCB.filter(F.action == "list"))
-@router.message(Command("pending_orders"))
 def _list_text(count: int) -> str:
     return (
         "🛒 <b>PENDING FULFILLMENT</b>\n\n"
@@ -66,6 +64,11 @@ def _list_text(count: int) -> str:
     )
 
 
+# Both entry points land on the same renderer, which is why it takes `event` rather than a
+# CallbackQuery or a Message: the panel's 🛒 Orders button edits the panel in place, /pending_orders
+# sends a new message.
+@router.callback_query(AdminOrderCB.filter(F.action == "list"))
+@router.message(Command("pending_orders"))
 async def list_pending(event, session: AsyncSession) -> None:
     orders = await OrderRepo(session).list_pending_manual()
     text = _list_text(len(orders))

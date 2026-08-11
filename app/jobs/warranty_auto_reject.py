@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.database.repositories.user_repo import UserRepo
 from app.database.repositories.warranty_repo import WarrantyRepo
 from app.database.session import session_scope
+from app.services.support_service import close_claim_ticket
 from app.services.warranty_service import format_duration, now_utc, reject_claim
 from app.utils.time import as_utc
 
@@ -33,6 +34,10 @@ async def auto_reject_expired_warranty_claims(sessionmaker: async_sessionmaker, 
 
         for warranty in stale:
             outcome = reject_claim(warranty, reason=REASON, at=now)
+            await session.flush()
+            await close_claim_ticket(
+                bot, session, ticket_id=warranty.claim_ticket_id, reason=f"Warranty claim #{warranty.id} auto-closed"
+            )
 
             if outcome.granted_seconds > 0:
                 tail = (

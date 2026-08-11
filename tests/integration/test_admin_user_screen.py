@@ -102,18 +102,20 @@ async def test_the_list_shows_handle_id_and_join_time_for_each_member(sqlite_ses
     assert "3</b> member(s) joined" in text
 
 
-async def test_the_list_is_numbered_oldest_at_the_top(sqlite_sessionmaker) -> None:
+async def test_the_list_is_numbered_newest_at_the_top(sqlite_sessionmaker) -> None:
+    """The most recent signup is row 1. The number is a position in the list, not a join rank."""
     await _seed(sqlite_sessionmaker, 3)
 
     async with sqlite_sessionmaker() as session:
         text, _markup = await admin_users._render_list(session, 1)
 
-    assert text.index("@user000") < text.index("@user001") < text.index("@user002")
+    assert text.index("@user002") < text.index("@user001") < text.index("@user000")
     assert "<b>1.</b>" in text and "<b>3.</b>" in text
 
 
 async def test_numbering_continues_across_pages(sqlite_sessionmaker) -> None:
-    """Page 2 starts at 21, so a number is the member's signup rank rather than a row index."""
+    """Page 2 starts at 21, so a number is the member's place in the whole list rather than a row
+    index that restarts on every page."""
     await _seed(sqlite_sessionmaker, 25)
 
     async with sqlite_sessionmaker() as session:

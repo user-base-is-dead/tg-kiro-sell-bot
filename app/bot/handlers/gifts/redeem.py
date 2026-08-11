@@ -13,6 +13,7 @@ from app.bot.keyboards.common import back_keyboard, with_nav
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.keyboards.styles import PRIMARY, btn
 from app.bot.states.gift_form import GiftRedeemForm
+from app.bot.texts import NO_PREVIEW, home_body
 from app.database.models.gift import GiftCode, GiftKind
 from app.database.models.user import User
 from app.locales.i18n import t
@@ -116,8 +117,9 @@ async def cancel_gift(message: Message, state: FSMContext, session: AsyncSession
     await state.clear()
     is_admin = await is_admin_user(session, user.telegram_id)
     await message.answer(
-        t("welcome.subtitle", user.locale, name=user.first_name or "there"),
+        home_body(user.locale, user.first_name),
         reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
+        link_preview_options=NO_PREVIEW,
     )
 
 

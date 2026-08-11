@@ -11,10 +11,10 @@ from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.states.topup_form import TopUpForm
+from app.bot.texts import NO_PREVIEW, home_body
 from app.core.config import get_settings
 from app.database.models.user import User
 from app.database.repositories.wallet_repo import WalletRepo
-from app.locales.i18n import t
 from app.utils.money import format_minor
 
 router = Router(name="payments.topup")
@@ -64,6 +64,7 @@ async def cancel_topup(message: Message, state: FSMContext, session: AsyncSessio
     await state.clear()
     is_admin = await is_admin_user(session, user.telegram_id)
     await message.answer(
-        t("welcome.subtitle", user.locale, name=user.first_name or "there"),
+        home_body(user.locale, user.first_name),
         reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
+        link_preview_options=NO_PREVIEW,
     )

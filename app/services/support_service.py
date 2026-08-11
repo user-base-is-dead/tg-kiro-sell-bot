@@ -253,6 +253,35 @@ async def close_ticket(session: AsyncSession, *, ticket_id: int, reason: str) ->
     return ticket
 
 
+async def _close_topic(bot: Bot, ticket: SupportTicket) -> None:
+    """Retire the forum thread so staff can't keep typing into something nobody reads. Best-effort:
+    a lost topic must not roll back a close that is already done as far as the caller is concerned."""
+    group_id = get_settings().support_group_id
+    if group_id is None or ticket.topic_id is None:
+        return
+    try:
+        await bot.close_forum_topic(chat_id=group_id, message_thread_id=ticket.topic_id)
+    except TelegramAPIError as exc:
+        logger.warning("Couldn't close topic %s for %s (%s)", ticket.topic_id, ticket.ticket_number, exc)
+
+
+async def close_claim_ticket(bot: Bot, session: AsyncSession, *, ticket_id: int | None, reason: str) -> None:
+    """Close the ticket a warranty claim was discussed in, as part of resolving the claim itself.
+
+    A warranty claim's thread exists only for that claim, so /done, /reject and the auto-reject job
+    are the real end of it — requiring a separate /close leaves dead threads open and lets the user
+    keep writing into a claim that is already decided. No closure notice is sent here: the caller
+    has already told the user the outcome, which is strictly more informative.
+    """
+    if ticket_id is None:
+        return
+    ticket = await SupportRepo(session).get_by_id(ticket_id)
+    if ticket is None or ticket.status is TicketStatus.CLOSED:
+        return
+    await close_ticket(session, ticket_id=ticket.id, reason=reason)
+    await _close_topic(bot, ticket)
+
+
 async def announce_closure(bot: Bot, session: AsyncSession, ticket: SupportTicket) -> None:
     """The two things that must happen outside the database whenever a ticket closes, wherever the
     close came from: tell the user in their own language, and close the Telegram topic so staff
@@ -267,9 +296,4 @@ async def announce_closure(bot: Bot, session: AsyncSession, ticket: SupportTicke
         except TelegramAPIError as exc:
             logger.warning("Couldn't tell user about closure of %s (%s)", ticket.ticket_number, exc)
 
-    group_id = get_settings().support_group_id
-    if group_id is not None and ticket.topic_id is not None:
-        try:
-            await bot.close_forum_topic(chat_id=group_id, message_thread_id=ticket.topic_id)
-        except TelegramAPIError as exc:
-            logger.warning("Couldn't close topic %s for %s (%s)", ticket.topic_id, ticket.ticket_number, exc)
+    await _close_topic(bot, ticket)

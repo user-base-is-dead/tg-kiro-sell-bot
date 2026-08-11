@@ -95,7 +95,7 @@ async def _render_list(session: AsyncSession, page_num: int) -> tuple[str, Inlin
     lines = [
         "👥 <b>USERS</b>",
         "",
-        f"<b>{total}</b> member(s) joined · oldest first, newest at the bottom",
+        f"<b>{total}</b> member(s) joined · newest first, oldest on the last page",
         f"Showing {page.offset + 1}–{page.offset + len(users)}",
         "",
     ]

@@ -12,6 +12,7 @@ from app.bot.filters.is_admin import is_admin_user
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import language_inline_keyboard, main_inline_keyboard
 from app.bot.panel import panel_markup
+from app.bot.texts import NO_PREVIEW, home_body
 from app.database.models.user import User
 from app.locales.i18n import supported_locales, t
 
@@ -49,8 +50,9 @@ async def set_language(query: CallbackQuery, callback_data: LangCB, session: Asy
     if query.message:
         logger.debug("Language changed to %s, updating keyboards", locale)
         await query.message.edit_text(
-            t("welcome.subtitle", locale, name=user.first_name or "there"),
+            home_body(locale, user.first_name),
             reply_markup=main_inline_keyboard(locale, is_admin=is_admin),
+            link_preview_options=NO_PREVIEW,
         )
         # Takes down the retired bottom panel if this user still has it. The edit above cannot
         # carry that (edits take inline markup only), so it rides on the confirmation line — a

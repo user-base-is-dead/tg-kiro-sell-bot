@@ -13,6 +13,7 @@ from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
 from app.bot.keyboards.common import back_keyboard
 from app.bot.keyboards.main_menu import main_inline_keyboard
+from app.bot.texts import NO_PREVIEW, home_body
 from app.core.config import get_settings
 from app.database.models.order import OrderStatus
 from app.database.models.user import User
@@ -56,8 +57,9 @@ async def on_nav(
         # client from `/start`; re-installing it would need a fresh message (edits cannot carry a
         # reply keyboard) and that extra bubble is exactly what we refuse to put in the chat.
         await query.message.edit_text(
-            t("welcome.subtitle", user.locale, name=user.first_name or "there"),
+            home_body(user.locale, user.first_name),
             reply_markup=main_inline_keyboard(user.locale, is_admin=is_admin),
+            link_preview_options=NO_PREVIEW,
         )
         await query.answer()
         return
