@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # Public community group shown on the welcome screen. Blank hides the link and its button
     # entirely, so a deployment without a group never advertises a dead one.
     community_group_url: str = Field(
-        default="https://t.me/kiro_seller_group", alias="COMMUNITY_GROUP_URL"
+        default="https://t.me/exonmarketplace", alias="COMMUNITY_GROUP_URL"
     )
 
     default_currency: str = Field(default="USD", alias="DEFAULT_CURRENCY")

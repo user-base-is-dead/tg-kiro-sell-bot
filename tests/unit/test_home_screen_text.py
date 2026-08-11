@@ -16,7 +16,7 @@ from app.bot.handlers.user import language
 from app.bot.texts import home_body
 from app.core import config
 
-GROUP_URL = "https://t.me/kiro_seller_group"
+GROUP_URL = "https://t.me/exonmarketplace"
 
 
 @pytest.fixture
