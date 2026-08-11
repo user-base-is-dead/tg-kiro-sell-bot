@@ -1,6 +1,7 @@
 aiogram>=3.30,<3.31
 SQLAlchemy>=2.0.36,<2.1
 asyncpg>=0.30.0,<0.31
+aiosqlite>=0.20.0,<0.21
 alembic>=1.14.0,<1.15
 redis>=5.2.1,<5.3
 pydantic>=2.4.1,<2.10
