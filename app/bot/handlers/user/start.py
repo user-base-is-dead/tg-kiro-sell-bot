@@ -13,7 +13,9 @@ from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.panel import panel_markup
 from app.bot.texts import NO_PREVIEW, home_body
+from app.database.models.referral import Referral
 from app.database.models.user import User
+from app.database.repositories.referral_repo import ReferralRepo
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
 
@@ -32,6 +34,10 @@ async def cmd_start_with_ref(message: Message, command: CommandObject, session: 
         referrer = await repo.get_by_referral_code(code)
         if referrer is not None and referrer.id != user.id:
             user.referred_by_id = referrer.id
+            referral_repo = ReferralRepo(session)
+            existing = await referral_repo.get_for_referee(user.id)
+            if existing is None:
+                session.add(Referral(referrer_id=referrer.id, referee_id=user.id))
             await session.flush()
     await _send_welcome(message, session, user, force_panel=True)
 
