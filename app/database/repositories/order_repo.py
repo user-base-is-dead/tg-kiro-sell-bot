@@ -39,6 +39,14 @@ class OrderRepo:
         result = await self._session.execute(select(func.count()).select_from(Order).where(Order.user_id == user_id))
         return int(result.scalar_one())
 
+    async def count_completed_for_user(self, user_id: int) -> int:
+        from app.database.models.order import OrderStatus
+
+        result = await self._session.execute(
+            select(func.count()).select_from(Order).where(Order.user_id == user_id, Order.status == OrderStatus.COMPLETED)
+        )
+        return int(result.scalar_one())
+
     async def list_pending_manual(self, *, offset: int = 0, limit: int = 10) -> list[Order]:
         """AUTO orders resolve straight to COMPLETED; PROCESSING only ever means "awaiting
         manual fulfillment by an admin"."""

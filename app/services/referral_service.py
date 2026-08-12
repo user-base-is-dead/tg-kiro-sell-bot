@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models.order import OrderStatus
 from app.database.models.wallet import TxnType
 from app.database.models.referral import Referral
 from app.core.config import get_settings
@@ -15,9 +14,8 @@ from app.services import settings_service, wallet_service
 
 async def try_qualify_referral(session: AsyncSession, *, user_id: int, referred_by_id: int | None) -> None:
     """Called right after an order completes. Qualifies the referrer on the referee's FIRST
-    completed order (rule lives in settings, not code) and credits the reward once — the
-    unique constraint on referee_id plus this existence check make it idempotent even if
-    called twice for the same user."""
+    completed order and credits the reward once — the unique constraint on referee_id plus
+    this existence check make it idempotent even if called twice for the same user."""
     if referred_by_id is None:
         return
 
@@ -26,9 +24,9 @@ async def try_qualify_referral(session: AsyncSession, *, user_id: int, referred_
     if existing is not None and existing.qualified_at is not None:
         return
 
-    completed_orders = [o for o in await OrderRepo(session).list_for_user(user_id, limit=2) if o.status == OrderStatus.COMPLETED]
-    if len(completed_orders) != 1:
-        return  # not their first completed order (or none yet)
+    completed_count = await OrderRepo(session).count_completed_for_user(user_id)
+    if completed_count != 1:
+        return
 
     reward_minor = await settings_service.get_setting(session, "referral_reward_minor")
     now = datetime.now(UTC)

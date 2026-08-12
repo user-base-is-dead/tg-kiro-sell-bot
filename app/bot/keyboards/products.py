@@ -17,9 +17,7 @@ from app.utils.status_emoji import STATUS_EMOJI
 # leans on its 🟡 prefix; DISABLED stays unstyled because it is not meant to draw the eye.
 _STATUS_STYLE: dict[ProductStatus, str | None] = {
     ProductStatus.IN_STOCK: SUCCESS,
-    ProductStatus.LOW_STOCK: PRIMARY,
-    # ON_HOLD is a temporary sold-out, so it borrows the same red rather than being absent from the
-    # table — a missing key here is a KeyError on a page a shopper is looking at.
+    ProductStatus.LOW_STOCK: SUCCESS,
     ProductStatus.ON_HOLD: DANGER,
     ProductStatus.OUT_OF_STOCK: DANGER,
     ProductStatus.COMING_SOON: PRIMARY,
