@@ -26,9 +26,11 @@ async def create_broadcast(
     title: str,
     body: str,
     parts: list[dict] | None = None,
+    buttons_json: str | None = None,
 ) -> Broadcast:
     """`parts` are {"chat_id", "message_id"} coordinates of the messages the admin composed. When
-    given, delivery copies those messages; when omitted, `body` is sent as plain text."""
+    given, delivery copies those messages; when omitted, `body` is sent as plain text.
+    `buttons_json` is a JSON list of rows, each row a list of {"text", "callback_data"} dicts."""
     result = await session.execute(select(User).where(User.status == UserStatus.ACTIVE, User.chat_id.is_not(None)))
     targets = list(result.scalars().all())
 
@@ -37,6 +39,7 @@ async def create_broadcast(
         title=title,
         body=body,
         parts_json=json.dumps(parts) if parts else None,
+        buttons_json=buttons_json,
         status=BroadcastStatus.RUNNING,
         total_targets=len(targets),
         started_at=datetime.now(UTC),
@@ -49,6 +52,20 @@ async def create_broadcast(
     return broadcast
 
 
+def _build_markup(buttons_json: str | None):
+    if not buttons_json:
+        return None
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = json.loads(buttons_json)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]) for btn in row]
+            for row in rows
+        ]
+    )
+
+
 async def _deliver(bot: Bot, chat_id: int, broadcast: Broadcast, parts: list[dict] | None) -> None:
     """Send one broadcast to one user.
 
@@ -58,7 +75,7 @@ async def _deliver(bot: Bot, chat_id: int, broadcast: Broadcast, parts: list[dic
     user receives the same sequence the admin wrote.
     """
     if not parts:
-        await bot.send_message(chat_id, broadcast.body)
+        await bot.send_message(chat_id, broadcast.body, reply_markup=_build_markup(broadcast.buttons_json))
         return
 
     for part in parts:

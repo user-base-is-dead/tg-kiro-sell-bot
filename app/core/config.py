@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # A BNB Chain JSON-RPC endpoint. The default public dataseed answers `eth_blockNumber` but
     # rate-limits `eth_getLogs`, so a keyed endpoint (NodeReal, Ankr, QuickNode) belongs here in
     # production — payment detection reads logs on every tick.
-    bsc_rpc_url: str = Field(default="https://bsc-dataseed.binance.org/", alias="BSC_RPC_URL")
+    bsc_rpc_url: str = Field(default="https://bsc-dataseed1.bnbchain.org/", alias="BSC_RPC_URL")
     # How many blocks one `eth_getLogs` request may span. Providers enforce their own cap and
     # reject anything wider outright, so this is tunable per endpoint rather than hard-coded.
     bsc_rpc_log_span: int = Field(default=500, alias="BSC_RPC_LOG_SPAN")

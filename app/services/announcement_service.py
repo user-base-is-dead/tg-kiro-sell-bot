@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.callbacks import ProductCB
 from app.core.config import get_settings
 from app.database.models.catalog import FulfillmentMode, Product, ProductStatus
 from app.database.repositories.product_repo import ProductRepo
@@ -69,6 +71,13 @@ def build_announcement(kind: str, product: Product, available: int) -> str:
     )
 
 
+def _buy_buttons(kind: str, product: Product) -> str | None:
+    if kind == _SOLD_OUT:
+        return None
+    cb = ProductCB(action="buy", id=str(product.id)).pack()
+    return json.dumps([[{"text": "🛒 Buy Now", "callback_data": cb}]])
+
+
 async def send_announcement(
     bot: Bot, session: AsyncSession, *, kind: str, product: Product, admin_id: int
 ) -> int:
@@ -85,6 +94,7 @@ async def send_announcement(
         admin_id=admin_id,
         title=f"{kind}: {product.name}"[:60],
         body=body,
+        buttons_json=_buy_buttons(kind, product),
     )
     await session.flush()
 

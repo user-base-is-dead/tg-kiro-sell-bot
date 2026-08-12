@@ -25,18 +25,19 @@ _STATUS_STYLE: dict[ProductStatus, str | None] = {
 }
 
 
-def category_grid(categories: list[Category], locale: str, *, loose: list[Product] | None = None):
+def category_grid(categories: list[Category], locale: str, *, loose: list["ProductView"] | None = None):
     rows: list[list[InlineKeyboardButton]] = []
 
-    # Products filed outside every category sit above the folders, one per row so they read as
-    # items rather than as more folders. The divider only appears when there is something to divide.
-    for product in loose or []:
+    for view in loose or []:
+        p = view.product
+        emoji = STATUS_EMOJI[view.display_status]
+        style = _STATUS_STYLE[view.display_status]
         rows.append(
             [
                 btn(
-                    f"📦 {product.name} — {format_minor(product.price_minor, product.currency)}",
-                    ProductCB(action="view", id=str(product.id)).pack(),
-                    PRIMARY,
+                    f"{emoji} {p.name} — {format_minor(p.price_minor, p.currency)}",
+                    ProductCB(action="view", id=str(p.id)).pack(),
+                    style,
                 )
             ]
         )

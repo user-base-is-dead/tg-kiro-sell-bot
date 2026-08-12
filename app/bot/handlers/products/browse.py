@@ -30,8 +30,9 @@ async def render_categories(session: AsyncSession, locale: str) -> tuple[str, ob
     loose = await ProductRepo(session).list_uncategorized()
     if not categories and not loose:
         return "🛍️ <b>STORE</b>\n\n💳 Premium products available now! Pay with crypto (💎 USDT/BNB) and get instant delivery. Browse categories or visit /products to see all available items.", category_grid([], locale)
+    loose_views = [await compute_display_status(session, p) for p in loose]
     heading = "Choose a category:" if categories else "Available now:"
-    return f"🛍️ <b>STORE</b>\n\n{heading}\n{PAD}", category_grid(categories, locale, loose=loose)
+    return f"🛍️ <b>STORE</b>\n\n{heading}\n{PAD}", category_grid(categories, locale, loose=loose_views)
 
 
 async def render_product_list(
