@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
@@ -9,14 +10,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminMiscCB
+from app.bot.callbacks import AdminMiscCB, ProductCB
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.keyboards.common import back_keyboard
-from app.bot.keyboards.styles import DANGER, SUCCESS, btn
+from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.bot.states.broadcast_form import BroadcastForm
 from app.core.config import get_settings
+from app.database.models.catalog import ProductStatus
 from app.database.models.user import User
 from app.database.repositories.audit_repo import AuditRepo
+from app.database.repositories.product_repo import ProductRepo
 from app.services.broadcast_service import create_broadcast, run_worker
 
 router = Router(name="admin.broadcast")
@@ -30,6 +33,9 @@ TITLE_MAX_CHARS = 60
 
 _PARTS = "parts"
 _PREVIEW_IDS = "preview_message_ids"
+_PRODUCT = "product"
+
+_PRODUCTS_PER_PAGE = 8
 
 _WRITE_HEADER = (
     "📢 <b>Broadcast</b>\n\n"
@@ -112,7 +118,7 @@ async def _show_writing_screen(message: Message, state: FSMContext) -> None:
 @router.callback_query(AdminMiscCB.filter(F.action == "broadcast"))
 async def start_broadcast(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BroadcastForm.body)
-    await state.update_data(**{_PARTS: [], _PREVIEW_IDS: []})
+    await state.update_data(**{_PARTS: [], _PREVIEW_IDS: [], _PRODUCT: None})
     await query.message.edit_text(_WRITE_HEADER, reply_markup=_writing_keyboard())
     await query.answer()
 
@@ -166,23 +172,156 @@ async def show_preview(query: CallbackQuery, state: FSMContext) -> None:
             )
             preview_ids.append(copied.message_id)
 
+    data = await state.get_data()
     control = await query.message.answer(
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"☝️ {len(parts)} part(s) above.\n\n"
-        "<b>Send</b> delivers this to every user.\n"
-        "<b>Back</b> discards it and starts over from an empty draft.",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    btn("🔙 Back", "broadcast_back", DANGER),
-                    btn("🚀 Send", "broadcast_send", SUCCESS),
-                ]
-            ]
-        ),
+        _control_text(len(parts), data.get(_PRODUCT)),
+        reply_markup=_control_keyboard(data.get(_PRODUCT)),
     )
     preview_ids.append(control.message_id)
     await state.update_data(**{_PREVIEW_IDS: preview_ids})
     await state.set_state(BroadcastForm.confirm)
+
+
+# ---- Attaching a product, so the post is buyable from the post ----
+#
+# An announcement that ends in "open /products to grab it" asks the reader to go and find the thing
+# again, and that walk is where interest is lost. Attaching a product puts the shop's own Buy Now
+# button under the post. It is deliberately optional — plenty of broadcasts are not about a
+# product at all.
+
+
+def _control_text(part_count: int, product: dict | None) -> str:
+    attached = (
+        f"\n🛒 <b>Attached:</b> {product['name']}"
+        f" — the post carries a <b>{_button_label(product)}</b> button.\n"
+        if product
+        else ""
+    )
+    return (
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"☝️ {part_count} part(s) above.\n"
+        f"{attached}"
+        "\n<b>Send</b> delivers this to every user.\n"
+        "<b>Back</b> discards it and starts over from an empty draft."
+    )
+
+
+def _button_label(product: dict) -> str:
+    """A not-yet-released product cannot be bought, so it gets a look-at-it button instead. Sending
+    people to a Buy Now that answers "unknown action" is worse than not linking at all."""
+    return "👀 View product" if product["coming_soon"] else "🛒 Buy Now"
+
+
+def _control_keyboard(product: dict | None) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            btn(
+                f"🛒 Product: {product['name'][:20]}" if product else "🛒 Attach product",
+                "broadcast_pickprod:0",
+                PRIMARY,
+            )
+        ]
+    ]
+    if product:
+        rows.append([btn("✖️ Remove product", "broadcast_clearprod", NEUTRAL)])
+    rows.append([btn("🔙 Back", "broadcast_back", DANGER), btn("🚀 Send", "broadcast_send", SUCCESS)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _buttons_json(product: dict | None) -> str | None:
+    if not product:
+        return None
+    action = "view" if product["coming_soon"] else "buy"
+    cb = ProductCB(action=action, id=str(product["id"])).pack()
+    return json.dumps([[{"text": _button_label(product), "callback_data": cb}]])
+
+
+async def _refresh_control(query: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    await query.message.edit_text(
+        _control_text(len(data.get(_PARTS, [])), data.get(_PRODUCT)),
+        reply_markup=_control_keyboard(data.get(_PRODUCT)),
+    )
+
+
+@router.callback_query(F.data.startswith("broadcast_pickprod:"), BroadcastForm.confirm)
+async def pick_product(query: CallbackQuery, session: AsyncSession) -> None:
+    page = int(query.data.split(":", 1)[1])
+    # `list_active` and not the store listing: a COMING_SOON product is exactly the one an
+    # announcement is most likely to be about, and filtering by what is buyable today would hide it.
+    products = await ProductRepo(session).list_active(limit=200)
+    pages = max(1, (len(products) + _PRODUCTS_PER_PAGE - 1) // _PRODUCTS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+
+    rows = []
+    for product in products[page * _PRODUCTS_PER_PAGE : (page + 1) * _PRODUCTS_PER_PAGE]:
+        soon = product.status is ProductStatus.COMING_SOON
+        rows.append(
+            [
+                btn(
+                    f"{'🔜' if soon else '🛍️'} {product.name}",
+                    f"broadcast_setprod:{product.id}",
+                    NEUTRAL if soon else PRIMARY,
+                )
+            ]
+        )
+
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(btn("⬅️ Prev", f"broadcast_pickprod:{page - 1}", NEUTRAL))
+        if page < pages - 1:
+            nav.append(btn("Next ➡️", f"broadcast_pickprod:{page + 1}", NEUTRAL))
+        rows.append(nav)
+    rows.append([btn("🔙 Back", "broadcast_prodback", DANGER)])
+
+    text = (
+        "🛒 <b>Attach a product</b>\n\n"
+        "Pick the product this post is about and its button goes under the message, so people can "
+        "act on it without hunting through the store.\n\n"
+        "🛍️ = on sale, gets a <b>Buy Now</b> button\n"
+        "🔜 = not released yet, gets a <b>View product</b> button instead — there is nothing to buy "
+        "yet, and a dead Buy Now is worse than none."
+    )
+    if not products:
+        text = "🛒 <b>Attach a product</b>\n\nNo active products to attach yet."
+    if pages > 1:
+        text += f"\n\nPage {page + 1} of {pages}"
+
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("broadcast_setprod:"), BroadcastForm.confirm)
+async def set_product(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    product = await ProductRepo(session).get_by_id(int(query.data.split(":", 1)[1]))
+    if product is None:
+        await query.answer("That product is gone.", show_alert=True)
+        return
+    await state.update_data(
+        **{
+            _PRODUCT: {
+                "id": product.id,
+                "name": product.name,
+                "coming_soon": product.status is ProductStatus.COMING_SOON,
+            }
+        }
+    )
+    await _refresh_control(query, state)
+    await query.answer("Attached.")
+
+
+@router.callback_query(F.data == "broadcast_clearprod", BroadcastForm.confirm)
+async def clear_product(query: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(**{_PRODUCT: None})
+    await _refresh_control(query, state)
+    await query.answer("Removed.")
+
+
+@router.callback_query(F.data == "broadcast_prodback", BroadcastForm.confirm)
+async def product_pick_back(query: CallbackQuery, state: FSMContext) -> None:
+    await _refresh_control(query, state)
+    await query.answer()
 
 
 @router.callback_query(F.data == "broadcast_back", BroadcastForm.confirm)
@@ -193,7 +332,7 @@ async def back_to_writing(query: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
 
     await state.set_state(BroadcastForm.body)
-    await state.update_data(**{_PARTS: [], _PREVIEW_IDS: []})
+    await state.update_data(**{_PARTS: [], _PREVIEW_IDS: [], _PRODUCT: None})
 
     await _delete_quietly(query.message.bot, query.message.chat.id, data.get(_PREVIEW_IDS, []))
     await query.message.answer(_WRITE_HEADER, reply_markup=_writing_keyboard())
@@ -219,13 +358,18 @@ async def confirm_send(query: CallbackQuery, state: FSMContext, session: AsyncSe
         title=_derive_title(labels),
         body="\n".join(labels),
         parts=coordinates,
+        buttons_json=_buttons_json(data.get(_PRODUCT)),
     )
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id,
         action="broadcast.send",
         target_type="broadcast",
         target_id=str(broadcast.id),
-        metadata={"total_targets": broadcast.total_targets, "parts": len(parts)},
+        metadata={
+            "total_targets": broadcast.total_targets,
+            "parts": len(parts),
+            "product_id": (data.get(_PRODUCT) or {}).get("id"),
+        },
     )
 
     # The preview copies stay: they are the record of what was sent. Only the control message is

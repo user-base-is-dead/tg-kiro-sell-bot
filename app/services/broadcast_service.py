@@ -74,15 +74,21 @@ async def _deliver(bot: Bot, chat_id: int, broadcast: Broadcast, parts: list[dic
     "forwarded from" header and without re-uploading the file. Each part is copied in order, so the
     user receives the same sequence the admin wrote.
     """
+    markup = _build_markup(broadcast.buttons_json)
     if not parts:
-        await bot.send_message(chat_id, broadcast.body, reply_markup=_build_markup(broadcast.buttons_json))
+        await bot.send_message(chat_id, broadcast.body, reply_markup=markup)
         return
 
-    for part in parts:
+    # The buttons ride on the *last* part. A composed broadcast is a sequence, and a Buy Now button
+    # hanging off part 1 of 4 asks people to decide before they have read the offer — it also
+    # scrolls out of sight under everything that follows. Attaching it to every part would give
+    # them four identical buttons.
+    for index, part in enumerate(parts):
         await bot.copy_message(
             chat_id=chat_id,
             from_chat_id=part["chat_id"],
             message_id=part["message_id"],
+            reply_markup=markup if index == len(parts) - 1 else None,
         )
 
 
