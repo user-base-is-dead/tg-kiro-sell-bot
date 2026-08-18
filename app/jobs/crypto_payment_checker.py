@@ -70,7 +70,11 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
             if tx["hash"] in processed_txs:
                 continue
 
-            matches = []
+            # Two tiers, kept apart. `exact` is the buyer who sent the sub-cent tail we gave them —
+            # that identifies one invoice and no other. `near` is the buyer whose wallet rounded the
+            # amount, which is a real payment but has lost the tail that told the invoices apart.
+            exact: list[tuple[str, CryptoPayment]] = []
+            near: list[tuple[str, CryptoPayment]] = []
             for payment_id, payment in pending.items():
                 # Skip if payment has expired
                 if payment.created_at and datetime.now(UTC) > as_utc(payment.created_at) + timedelta(minutes=15):
@@ -79,7 +83,11 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                     continue
 
                 expected = float(payment.expected_amount)
-                if not monitor.matches_amount(tx["value"], expected):
+                if monitor.matches_exactly(tx["value"], expected):
+                    tier = exact
+                elif monitor.matches_amount(tx["value"], expected):
+                    tier = near
+                else:
                     continue
 
                 # Verify transfer happened after payment was created (allow 60s buffer)
@@ -88,7 +96,12 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                 if payment.created_at and tx["timestamp"] and tx["timestamp"] < as_utc(payment.created_at).timestamp() - 60:
                     continue
 
-                matches.append((payment_id, payment))
+                tier.append((payment_id, payment))
+
+            # An exact hit wins outright and is never weighed against rounded ones: the tail is
+            # unique per invoice, so a buyer who paid what we asked is served immediately even while
+            # somebody else's rounded transfer for the same cents is sitting in the same batch.
+            matches = exact or near
 
             if not matches:
                 continue

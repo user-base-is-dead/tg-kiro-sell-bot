@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
@@ -13,17 +14,18 @@ from app.database.models.user import User
 from app.database.models.crypto import CryptoPayment
 from app.locales.i18n import t
 from app.services import stock_hold_service
-from app.services.payments.blockchain_monitor import (
-    MATCH_TOLERANCE,
-    MIN_AMOUNT_GAP,
-    BlockchainMonitor,
-)
+from app.services.payments.blockchain_monitor import MATCH_TOLERANCE, BlockchainMonitor
 from app.utils.time import as_utc
 
 router = Router(name="payments.topup_crypto")
 
 PAYMENT_TIMEOUT_MINUTES = 15
-SERVICE_FEE = 0.2  # USD — the base fee; see `_unique_total` for why an invoice may add cents.
+SERVICE_FEE = 0.2  # USD — flat, per order, never varies. See `_unique_total`.
+
+# How many invoices can be live for the same cent amount at once: the sub-cent tail runs 0.0001 to
+# 0.0049. It stops below half a cent on purpose — a tail of 0.0056 rounds the total up to $5.21, and
+# a buyer glancing at the price would see it move, which is the exact thing the tail replaced.
+TAIL_SLOTS = 49
 
 
 async def _balance_minor(session: AsyncSession, user_id: int) -> int:
@@ -65,19 +67,18 @@ async def render_topup_packages(
 async def _unique_total(session: AsyncSession, amount_usd: float, now: datetime) -> float:
     """The exact USDT total this invoice must receive, distinct from every other live invoice.
 
-    A transfer is matched to an invoice by amount and nothing else — the chain carries no order id.
-    So two buyers topping up $15.00 at the same time used to be handed the identical total, and the
-    checker refuses to guess between them: it logs "ambiguous" and skips the transfer, leaving both
-    buyers paid and neither credited. Nudging the fee up per collision makes each live total
-    distinct, so every transfer resolves to exactly one invoice.
+    The chain carries no order id, so a transfer is matched to an invoice by amount. Two buyers
+    owing $5.20 at the same moment would hand the checker a payment it cannot attribute, and it
+    refuses to guess — it logs "ambiguous" and credits neither.
 
-    "Distinct" means further apart than the matching window, not merely unequal. A transfer counts
-    for an invoice if it lands within MATCH_TOLERANCE of it, so totals one cent apart would both
-    claim the same payment and put us straight back in the ambiguous case the spacing exists to
-    prevent. MIN_AMOUNT_GAP is that window doubled and then some.
+    The distinguishing mark lives *below* the cent: $5.2043, not $5.20. USDT carries 18 decimals, so
+    a four-decimal total is an ordinary amount to every wallet, and to the buyer the price is still
+    $5.20 with a $0.20 fee. That matters more than it sounds — an earlier version disambiguated by
+    nudging the fee up a cent at a time, which meant two people could be shown two different prices
+    for the same product, and the one who paid $0.24 in fees had no way to know why.
 
-    Only currently-matchable invoices reserve a total. A cancelled, confirmed or timed-out one is
-    no longer a candidate, so its amount is free again and the fee never drifts upward over time.
+    Only currently-matchable invoices reserve a tail. A cancelled, confirmed or timed-out one is no
+    longer a candidate, so its number is free again immediately.
     """
     cutoff = now - timedelta(minutes=PAYMENT_TIMEOUT_MINUTES)
     result = await session.execute(
@@ -85,12 +86,22 @@ async def _unique_total(session: AsyncSession, amount_usd: float, now: datetime)
             CryptoPayment.status == "PENDING", CryptoPayment.created_at >= cutoff
         )
     )
-    taken = [round(float(a), 2) for a in result.scalars()]
+    taken = {round(float(a), 4) for a in result.scalars()}
 
-    total = round(amount_usd + SERVICE_FEE, 2)
-    while any(round(abs(total - other), 2) < MIN_AMOUNT_GAP for other in taken):
-        total = round(total + 0.01, 2)
-    return total
+    base = round(amount_usd + SERVICE_FEE, 2)
+    free = [
+        candidate
+        for n in range(1, TAIL_SLOTS + 1)
+        if (candidate := round(base + n / 10_000, 4)) not in taken
+    ]
+    if not free:
+        # Every tail on this cent is spoken for — that is ~99 live invoices for the identical
+        # amount, inside 15 minutes. Handing back the bare total is the honest fallback: it may end
+        # up ambiguous and wait for an admin, which beats refusing to sell.
+        return base
+    # Picked at random rather than in order so a buyer cannot read the store's live order count off
+    # their own invoice, and so two invoices opened in the same second rarely land adjacent.
+    return random.choice(free)
 
 
 def invoice_product_id(payment: CryptoPayment) -> int | None:
@@ -128,7 +139,10 @@ async def render_payment_details(
     now = datetime.now(UTC)
 
     total_amount = await _unique_total(session, amount_usd, now)
-    fee = round(total_amount - amount_usd, 2)
+    # The fee shown is the fee charged — the flat one. What the tail adds is a fraction of a cent,
+    # and calling that "service fee" would make the same product look differently priced to two
+    # people standing next to each other.
+    fee = SERVICE_FEE
 
     buying = purchase_product_id is not None
     payment = CryptoPayment(
@@ -154,11 +168,11 @@ async def render_payment_details(
         f"💰 <b>{amount_label}:</b> ${amount_usd:.2f}\n"
         f"🏷️ <b>Service Fee:</b> ${fee:.2f}\n"
         f"📊 <b>Total to Send:</b>\n"
-        f"👉 <code>{total_amount:.2f}</code> <b>USDT</b>\n\n"
+        f"👉 <code>{total_amount:.4f}</code> <b>USDT</b>\n\n"
         f"📋 <b>Tap the amount above to copy it</b>, then paste it into the amount field of your "
-        f"wallet. Do not type it by hand and do not round it — the exact figure "
-        f"<code>{total_amount:.2f}</code> is how your payment is matched to "
-        f"{'this order' if buying else 'your account'}.\n\n"
+        f"wallet. Do not type it by hand and do not round it — those last few decimals are what "
+        f"tells us this payment is {'this order' if buying else 'yours'} and not somebody "
+        f"else's.\n\n"
         f"⏱️ <b>Payment expires in:</b> {minutes} minutes\n\n"
         "✅ Payment will be auto-confirmed when received.\n"
         f"🎯 If your wallet rounds it, anything within ±${MATCH_TOLERANCE:.2f} still confirms — "
@@ -222,15 +236,14 @@ async def on_check_topup_payment(query: CallbackQuery, session: AsyncSession, us
         await session.flush()
         text = "❌ <b>Payment Expired</b>\n\nThe payment window has closed. Please start a new top-up."
     elif payment.status == "CONFIRMED":
-        # Derived from the invoice, not recomputed from the base fee: the fee on this specific
-        # invoice may carry disambiguating cents, and `product_amount_minor` is the authoritative
-        # record of what the wallet was actually credited with.
+        # `product_amount_minor` is the authoritative record of what the wallet was credited with;
+        # the fee is flat, so it is stated rather than derived from the invoice total, whose last
+        # decimals are an identifier and not money the buyer was charged for anything.
         topup_amount = payment.product_amount_minor / 100
-        fee = round(float(payment.expected_amount) - topup_amount, 2)
         text = (
             f"✅ <b>Payment Confirmed!</b>\n\n"
             f"Top-Up Credited: ${topup_amount:.2f} USDT\n"
-            f"Service Fee: ${fee:.2f}\n"
+            f"Service Fee: ${SERVICE_FEE:.2f}\n"
             f"Transaction: <code>{payment.tx_hash}</code>\n\n"
             "Your wallet has been credited. Thank you!"
         )

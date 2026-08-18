@@ -53,8 +53,8 @@ async def test_credited_amount_is_unaffected_by_the_disambiguating_cents(sqlite_
 
 
 async def test_settled_and_expired_invoices_do_not_reserve_amounts(sqlite_sessionmaker) -> None:
-    """Only PENDING invoices inside their window can be confused with each other. If dead ones
-    kept holding their totals, the fee would creep upward forever as the bot aged."""
+    """Only PENDING invoices inside their window can be confused with each other, so a settled one
+    must free its sub-cent tail for the next buyer to use."""
     async with sqlite_sessionmaker() as session:
         a = await _user(session, 7005)
         b = await _user(session, 7006)
@@ -69,7 +69,10 @@ async def test_settled_and_expired_invoices_do_not_reserve_amounts(sqlite_sessio
             await session.execute(select(CryptoPayment).where(CryptoPayment.id != first.id))
         ).scalars().one()
 
-    assert float(second.expected_amount) == float(first.expected_amount)
+    # The tail is picked at random from whatever is free, so the freed number is not necessarily
+    # handed straight back — what matters is that the dead invoice reserved nothing and the price is
+    # still the quoted $15.00 plus the flat fee.
+    assert round(float(second.expected_amount), 2) == 15.20
 
 
 async def test_expired_pending_invoice_releases_its_amount(sqlite_sessionmaker) -> None:
@@ -89,4 +92,4 @@ async def test_expired_pending_invoice_releases_its_amount(sqlite_sessionmaker) 
             await session.execute(select(CryptoPayment).where(CryptoPayment.id != first.id))
         ).scalars().one()
 
-    assert float(second.expected_amount) == float(first.expected_amount)
+    assert round(float(second.expected_amount), 2) == 15.20

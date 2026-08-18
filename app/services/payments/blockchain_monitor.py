@@ -8,21 +8,23 @@ from app.core.config import get_settings
 
 # USDT on BNB Smart Chain (BEP20) - 18 decimals
 USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955"
-# How far off the invoiced total a transfer may land and still count as payment for it.
+# A transfer is matched to an invoice at two levels, and the two exist for opposite reasons.
 #
-# Wallets do not send what the buyer typed. Trust Wallet and friends round the USDT amount to their
-# own display precision, some deduct a spread on a swap-and-send, and a buyer paying $5.20 by hand
-# from a balance of $5.19 sends $5.19. Every one of those is somebody who paid and then sat looking
-# at an unconfirmed invoice. Two cents either way covers all of it and costs at most two cents.
+# EXACT is the invoice's fingerprint. Every live invoice is given its own sub-cent tail — 5.2043,
+# not 5.20 — so a buyer who copies the amount we gave them identifies their own invoice and nobody
+# else's, however many people are paying $5.20 at that moment. The price stays $5.20 to the cent,
+# which is the point: the fee never visibly moves.
 #
-# The price of a wide window is that neighbouring invoices can both look like a match, and the
-# checker will not guess between them — so `_unique_total` in topup_crypto.py must keep live
-# invoices further apart than this. Widen one and the other has to move with it.
+# NEAR is the safety net for when the wallet does not send what we asked. Trust Wallet and friends
+# round to their own display precision, swap-and-send paths take a spread, and somebody paying $5.20
+# out of a $5.19 balance sends $5.19. Rounding destroys the fingerprint, so those transfers are
+# matched on the cents alone, two cents either way.
+#
+# The catch is that NEAR is far wider than the gap between two fingerprints, so a rounded transfer
+# can look like several invoices at once. That is why it is a fallback and not the primary rule: an
+# exact hit is taken outright, and a near hit only counts when exactly one invoice is in range.
+EXACT_TOLERANCE = 0.00004
 MATCH_TOLERANCE = 0.02
-
-# The smallest gap allowed between two live invoice totals: one cent wider than the window on both
-# sides, so no single transfer can ever sit inside two invoices' windows at once.
-MIN_AMOUNT_GAP = round(MATCH_TOLERANCE * 2 + 0.01, 2)
 
 # keccak256("Transfer(address,address,uint256)")
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -109,8 +111,17 @@ class BlockchainMonitor:
         except Exception as e:
             raise RuntimeError(f"BSC RPC error: {e}") from e
 
+    def matches_exactly(self, transfer_amount: float, expected_amount: float) -> bool:
+        """Whether this transfer carries the invoice's own sub-cent fingerprint.
+
+        The window is half the spacing between two fingerprints, so at most one live invoice can
+        ever answer to a given transfer here — which is what makes an exact hit safe to act on
+        without asking anything else.
+        """
+        return abs(transfer_amount - expected_amount) <= EXACT_TOLERANCE
+
     def matches_amount(self, transfer_amount: float, expected_amount: float) -> bool:
-        """Whether this transfer pays this invoice, judged in whole cents.
+        """Whether this transfer pays this invoice to the cent, fingerprint ignored.
 
         The comparison is rounded to cents before it is made because the naive float form quietly
         excludes the exact edge: 5.20 - 5.18 comes out as 0.02000000000000046, which is larger than
