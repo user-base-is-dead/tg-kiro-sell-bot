@@ -256,6 +256,72 @@ async def add_items(session: AsyncSession, gift_id: int, payloads: list[str]) ->
     return len(clean)
 
 
+async def list_items(
+    session: AsyncSession, gift_id: int, *, limit: int | None = None, offset: int = 0
+) -> list[GiftItem]:
+    """The code's own items, oldest first — the order they will be handed out in."""
+    stmt = select(GiftItem).where(GiftItem.gift_code_id == gift_id).order_by(GiftItem.id).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_items(session: AsyncSession, gift_id: int) -> tuple[int, int]:
+    """`(available, total)` for one code."""
+    total = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(GiftItem).where(GiftItem.gift_code_id == gift_id)
+            )
+        ).scalar_one()
+    )
+    return await available_item_count(session, gift_id), total
+
+
+async def update_item_payload(session: AsyncSession, item_id: int, payload: str) -> int:
+    """Replace one unclaimed item's contents. Returns the gift code id it belongs to.
+
+    A delivered item is frozen: its claimer was shown the old value and rewriting the row would
+    leave the bot's record disagreeing with what that person actually holds.
+    """
+    item = await session.get(GiftItem, item_id)
+    if item is None:
+        raise ValueError("No such gift item")
+    if item.status is not GiftItemStatus.AVAILABLE:
+        raise ValueError("That item was already claimed — it can no longer be edited")
+
+    clean = payload.strip()
+    if not clean:
+        raise ValueError("An item cannot be empty")
+
+    item.payload = get_cipher().encrypt(clean)
+    await session.flush()
+    return item.gift_code_id
+
+
+async def delete_item(session: AsyncSession, item_id: int) -> int:
+    """Drop one unclaimed item. Returns the gift code id it belonged to.
+
+    `max_uses` shrinks with it, the mirror of `add_items`: on an ITEM code the two numbers are the
+    same thing, and leaving `max_uses` high would let a claimer burn their redemption on nothing.
+    """
+    item = await session.get(GiftItem, item_id)
+    if item is None:
+        raise ValueError("No such gift item")
+    if item.status is not GiftItemStatus.AVAILABLE:
+        raise ValueError("That item was already claimed — removing it would erase the record of who got it")
+
+    gift_id = item.gift_code_id
+    gift = await session.get(GiftCode, gift_id)
+    await session.delete(item)
+    if gift is not None:
+        gift.max_uses = max(gift.used_count, gift.max_uses - 1)
+        if gift.status is GiftStatus.ACTIVE and gift.used_count >= gift.max_uses:
+            gift.status = GiftStatus.EXHAUSTED
+    await session.flush()
+    return gift_id
+
+
 async def update_gift_code(
     session: AsyncSession,
     gift_id: int,

@@ -31,3 +31,10 @@ class GiftAddItemsForm(StatesGroup):
     """Topping an ITEM code up, so the code people already hold stretches further."""
 
     payloads = State()
+
+
+class GiftItemEditForm(StatesGroup):
+    """Rewriting one unclaimed item of an ITEM code — a typo'd key fixed in place, so the code
+    people already hold does not have to be reissued."""
+
+    payload = State()

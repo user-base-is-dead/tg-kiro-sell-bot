@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
@@ -12,17 +13,27 @@ from app.bot.callbacks import AdminGiftCB
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
-from app.bot.states.gift_form import GiftAddItemsForm, GiftCreateForm, GiftEditForm
+from app.bot.states.gift_form import (
+    GiftAddItemsForm,
+    GiftCreateForm,
+    GiftEditForm,
+    GiftItemEditForm,
+)
 from app.core.config import get_settings
-from app.database.models.gift import GiftKind, GiftStatus
+from app.core.security import get_cipher
+from app.database.models.gift import GiftItem, GiftItemStatus, GiftKind, GiftStatus
 from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.gift_repo import GiftRepo
 from app.services.gift_service import (
     add_items,
     available_item_count,
+    count_items,
     create_gift_code,
     delete_gift_code,
+    delete_item,
+    list_items,
     update_gift_code,
+    update_item_payload,
 )
 from app.utils.money import format_minor, parse_to_minor
 from app.utils.text import PAD
@@ -32,6 +43,20 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 _CANCEL_HINT = "\n\nSend /cancel to abort."
+
+# The two branches ask different questions, so "step 3 of 6" is only true on one of them. The flow
+# is written down once here and the step counter derived from it, rather than hard-coded into each
+# prompt where a reordered question silently makes every later number a lie.
+_STEP_FLOW = {
+    "item": ["items", "per_user_limit", "expires", "description"],
+    "credit": ["value", "max_uses", "per_user_limit", "expires", "description"],
+}
+
+
+def _step(data: dict, field: str) -> str:
+    """`(step N of M)` for the current branch. Step 1 is always the kind question."""
+    flow = _STEP_FLOW[data.get("kind", "credit")]
+    return f"<i>(step {flow.index(field) + 2} of {len(flow) + 1})</i>"
 
 
 async def _grant_label(session: AsyncSession, gift) -> str:
@@ -115,7 +140,9 @@ async def _render_detail(session: AsyncSession, gift_id: int) -> tuple[str, Inli
     if gift.kind is GiftKind.ITEM:
         # Topping a code up is the difference between running a second giveaway and extending this
         # one — the code people already have keeps working.
+        left, total = await count_items(session, gift.id)
         rows.append([btn("🎁 Add items", AdminGiftCB(action="additems", id=gid).pack(), SUCCESS)])
+        rows.append([btn(f"📋 Manage items ({left}/{total} left)", f"gitems:{gid}:0", PRIMARY)])
     rows.append(
         [
             btn(
@@ -316,7 +343,7 @@ async def set_value(message: Message, state: FSMContext) -> None:
     await state.update_data(value_minor=value_minor)
     await state.set_state(GiftCreateForm.max_uses)
     await message.answer(
-        "<i>(step 3 of 6)</i>\n"
+        f"{_step(await state.get_data(), 'max_uses')}\n"
         "How many total redemptions are allowed?\n"
         f"e.g. <code>1</code>, <code>50</code>, <code>1000</code>{_CANCEL_HINT}"
     )
@@ -403,21 +430,30 @@ def _expires_at(data: dict) -> datetime | None:
     return datetime.now(UTC) + timedelta(days=days) if days > 0 else None
 
 
+def _wizard_grant(data: dict) -> str:
+    """What the code being built will hand over. On the ITEM branch the item count *is* the
+    redemption count — `create_gift_code` sets `max_uses` from it — so both read from the same list
+    instead of a `max_uses` key that branch never collects."""
+    if data["kind"] == "item":
+        return f"🎁 Gift item — {len(data['items'])} item(s)"
+    return f"💰 {format_minor(data['value_minor'], get_settings().default_currency)}"
+
+
+def _wizard_max_uses(data: dict) -> int:
+    return len(data["items"]) if data["kind"] == "item" else data["max_uses"]
+
+
 async def _review_text(data: dict) -> str:
     """A last look before the code is generated — it is shown exactly once afterwards, so a typo
     caught here saves creating and disabling a throwaway code."""
-    if data["kind"] == "product":
-        grant = f"📦 {data['product_name']}"
-    else:
-        grant = f"💰 {format_minor(data['value_minor'], get_settings().default_currency)}"
-
+    grant = _wizard_grant(data)
     expires_at = _expires_at(data)
     expires = f"{expires_at:%d %b %Y}" if expires_at else "never"
     description = data.get("description") or "<i>(none)</i>"
     return (
         "🔍 <b>Review</b>\n\n"
         f"<b>Grants:</b> {grant}\n"
-        f"<b>Total redemptions:</b> {data['max_uses']}\n"
+        f"<b>Total redemptions:</b> {_wizard_max_uses(data)}\n"
         f"<b>Per-user limit:</b> {data['per_user_limit']}\n"
         f"<b>Expires:</b> {expires}\n\n"
         f"<b>Description users will see:</b>\n{description}\n\n"
@@ -458,12 +494,11 @@ async def confirm_create(query: CallbackQuery, state: FSMContext, session: Async
     )
     await state.clear()
 
-    grant = f"📦 {data['product_name']}" if is_product else f"💰 {format_minor(data['value_minor'], get_settings().default_currency)}"
     await query.message.edit_text(
         f"✅ <b>Gift code created</b>\n\n"
         f"<code>{plaintext_code}</code>\n\n"
-        f"<b>Grants:</b> {grant}\n"
-        f"<b>Redemptions:</b> {data['max_uses']}\n\n"
+        f"<b>Grants:</b> {_wizard_grant(data)}\n"
+        f"<b>Redemptions:</b> {_wizard_max_uses(data)}\n\n"
         "⚠️ Copy it now — only the last 4 characters are stored, so this is the one and only time "
         "the full code is shown.",
         reply_markup=InlineKeyboardMarkup(
@@ -584,3 +619,212 @@ async def receive_added_items(message: Message, state: FSMContext, session: Asyn
     text, markup = await _render_detail(session, gift_id)
     await message.answer(f"✅ Added {added} item(s).\n\n{text}", reply_markup=markup)
     await state.clear()
+
+
+# ---- Managing the items inside an ITEM code ----
+#
+# The pool a code hands out is not fixed once it is created: a key can be typo'd, revoked by the
+# vendor, or simply the wrong one. Editing or removing an *unclaimed* line changes only what future
+# claimers get, so the code already in circulation keeps working. A *delivered* line is frozen — its
+# claimer was shown that exact value, and rewriting or deleting the row would leave the bot
+# disagreeing with what that person actually holds.
+
+_ITEMS_PER_PAGE = 8
+
+
+def _preview(plaintext: str, width: int = 28) -> str:
+    """Enough of a line to tell two keys apart in a list, without pasting whole credentials onto
+    every screen — the full value lives one tap away."""
+    flat = " ".join(plaintext.split())
+    return flat if len(flat) <= width else f"{flat[:width]}…"
+
+
+async def _render_items(
+    session: AsyncSession, gift_id: int, page: int
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    gift = await GiftRepo(session).get_by_id(gift_id)
+    if gift is None or gift.kind is not GiftKind.ITEM:
+        return None
+
+    left, total = await count_items(session, gift_id)
+    pages = max(1, (total + _ITEMS_PER_PAGE - 1) // _ITEMS_PER_PAGE)
+    # Deleting the last item on the last page would otherwise strand the admin on an empty screen.
+    page = max(0, min(page, pages - 1))
+    items = await list_items(session, gift_id, limit=_ITEMS_PER_PAGE, offset=page * _ITEMS_PER_PAGE)
+    cipher = get_cipher()
+
+    rows = []
+    for number, item in enumerate(items, start=page * _ITEMS_PER_PAGE + 1):
+        available = item.status is GiftItemStatus.AVAILABLE
+        rows.append(
+            [
+                btn(
+                    f"{'🟢' if available else '✅'} {number}. {_preview(cipher.decrypt(item.payload))}",
+                    f"gitem:v:{item.id}",
+                    PRIMARY if available else NEUTRAL,
+                )
+            ]
+        )
+
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(btn("⬅️ Prev", f"gitems:{gift_id}:{page - 1}", NEUTRAL))
+        if page < pages - 1:
+            nav.append(btn("Next ➡️", f"gitems:{gift_id}:{page + 1}", NEUTRAL))
+        rows.append(nav)
+
+    rows.append([btn("➕ Add items", AdminGiftCB(action="additems", id=str(gift_id)).pack(), SUCCESS)])
+    rows.append([btn("🔙 Back", AdminGiftCB(action="view", id=str(gift_id)).pack(), DANGER)])
+
+    text = (
+        f"📋 <b>Items of ****{gift.code_last4}</b>\n\n"
+        f"<b>{left}</b> unclaimed of <b>{total}</b> — so {left} more people can claim this code.\n\n"
+        "🟢 = still up for grabs · ✅ = already handed to someone\n"
+        "Tap a line to read it in full, edit it, or remove it. Removing an unclaimed line lowers the "
+        "redemption count with it."
+    )
+    if pages > 1:
+        text += f"\n\nPage {page + 1} of {pages}"
+    return text + f"\n{PAD}", InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("gitems:"))
+async def show_items(query: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    _, gift_id, page = query.data.split(":", 2)
+    await state.clear()
+    rendered = await _render_items(session, int(gift_id), int(page))
+    if rendered is None:
+        await query.answer("Not found.", show_alert=True)
+        return
+    text, markup = rendered
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+
+
+async def _render_item(session: AsyncSession, item_id: int) -> tuple[str, InlineKeyboardMarkup] | None:
+    item = await session.get(GiftItem, item_id)
+    if item is None:
+        return None
+
+    available = item.status is GiftItemStatus.AVAILABLE
+    # Payloads are arbitrary admin-typed text and the screen is HTML — an unescaped "<" in a key
+    # would break the whole message, not just the line.
+    payload = html.escape(get_cipher().decrypt(item.payload))
+    claimed = f"claimed {item.claimed_at:%d %b %Y}" if item.claimed_at else "claimed"
+    text = (
+        f"🎁 <b>Gift item #{item.id}</b>\n\n"
+        f"<code>{payload}</code>\n\n"
+        f"<b>Status:</b> {'unclaimed' if available else claimed}\n"
+    )
+    if not available:
+        text += "\n<i>Already handed over, so it is read-only — the claimer holds this exact value.</i>\n"
+
+    rows = []
+    if available:
+        rows.append([btn("✏️ Edit", f"gitem:e:{item.id}", PRIMARY), btn("🗑️ Remove", f"gitem:d:{item.id}", DANGER)])
+    rows.append([btn("🔙 Back", f"gitems:{item.gift_code_id}:0", DANGER)])
+    return text + PAD, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("gitem:v:"))
+async def view_item(query: CallbackQuery, session: AsyncSession) -> None:
+    rendered = await _render_item(session, int(query.data.rsplit(":", 1)[1]))
+    if rendered is None:
+        await query.answer("Not found.", show_alert=True)
+        return
+    text, markup = rendered
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("gitem:e:"))
+async def prompt_edit_item(query: CallbackQuery, state: FSMContext) -> None:
+    item_id = int(query.data.rsplit(":", 1)[1])
+    await state.set_state(GiftItemEditForm.payload)
+    await state.update_data(item_id=item_id)
+    await query.message.edit_text(
+        "✏️ <b>Replace this item</b>\n\n"
+        "Send the new value for this line — it replaces the old one and is encrypted before it "
+        "touches the database.\n\n"
+        "Only whoever claims it from now on is affected; the code itself is unchanged."
+        f"{_CANCEL_HINT}\n{PAD}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[btn("🔙 Back", f"gitem:v:{item_id}", DANGER)]]),
+    )
+    await query.answer()
+
+
+@router.message(Command("cancel"), GiftItemEditForm.payload)
+async def cancel_item_edit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    item_id = (await state.get_data()).get("item_id")
+    await state.clear()
+    rendered = (await _render_item(session, item_id)) if item_id else None
+    if rendered is None:
+        rendered = await _render_list(session)
+    text, markup = rendered
+    await message.answer(f"Cancelled — nothing changed.\n\n{text}", reply_markup=markup)
+
+
+@router.message(GiftItemEditForm.payload)
+async def apply_item_edit(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
+    item_id = (await state.get_data())["item_id"]
+    raw = (message.text or "").strip()
+    if not raw:
+        await message.answer("Send the replacement value, or /cancel:")
+        return
+
+    try:
+        gift_id = await update_item_payload(session, item_id, raw)
+    except ValueError as exc:
+        await message.answer(f"❌ {exc}")
+        return
+
+    await AuditRepo(session).log(
+        actor_telegram_id=user.telegram_id,
+        action="gift.item.edit",
+        target_type="gift_item",
+        # The payload itself is never logged — only that it changed.
+        target_id=str(item_id),
+    )
+    await state.clear()
+
+    text, markup = await _render_items(session, gift_id, 0)
+    await message.answer(f"✅ Item updated.\n\n{text}", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("gitem:d:"))
+async def confirm_delete_item(query: CallbackQuery) -> None:
+    item_id = int(query.data.rsplit(":", 1)[1])
+    await query.message.edit_text(
+        "⚠️ Remove this item?\n\n"
+        "<i>It is discarded and the code can be claimed one time fewer. Nobody has received it, so "
+        "no one loses anything.</i>\n"
+        f"{PAD}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [btn("🗑️ Yes, remove", f"gitem:dok:{item_id}", DANGER)],
+                [btn("🔙 No, keep it", f"gitem:v:{item_id}", PRIMARY)],
+            ]
+        ),
+    )
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("gitem:dok:"))
+async def remove_item(query: CallbackQuery, session: AsyncSession, user) -> None:
+    item_id = int(query.data.rsplit(":", 1)[1])
+    try:
+        gift_id = await delete_item(session, item_id)
+    except ValueError as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
+
+    await AuditRepo(session).log(
+        actor_telegram_id=user.telegram_id,
+        action="gift.item.delete",
+        target_type="gift_item",
+        target_id=str(item_id),
+    )
+    await query.answer("Removed.")
+    text, markup = await _render_items(session, gift_id, 0)
+    await query.message.edit_text(f"🗑️ Item removed.\n\n{text}", reply_markup=markup)

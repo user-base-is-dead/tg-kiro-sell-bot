@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.filters.menu_button import MenuButton
 from app.bot.states.broadcast_form import BroadcastForm
 from app.bot.states.category_form import CategoryForm
-from app.bot.states.gift_form import GiftAddItemsForm, GiftCreateForm, GiftEditForm
+from app.bot.states.gift_form import (
+    GiftAddItemsForm,
+    GiftCreateForm,
+    GiftEditForm,
+    GiftItemEditForm,
+)
 from app.bot.states.order_fulfill_form import OrderFulfillForm
 from app.bot.states.product_form import (
     ProductEditForm,
@@ -69,6 +74,7 @@ _ADMIN_STATE_GROUPS = (
     GiftAddItemsForm,
     GiftCreateForm,
     GiftEditForm,
+    GiftItemEditForm,
     OrderFulfillForm,
     ProductEditForm,
     ProductForm,
