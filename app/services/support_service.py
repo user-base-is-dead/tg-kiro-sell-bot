@@ -21,8 +21,21 @@ from app.utils.errors import UserError
 logger = logging.getLogger(__name__)
 
 
-async def _send_media(bot: Bot, chat_id: int, media_id: str, message_thread_id: int | None = None) -> None:
-    """Send media (stored as 'type:file_id') to a chat using the appropriate Telegram method."""
+async def _send_media(
+    bot: Bot,
+    chat_id: int,
+    media_id: str,
+    message_thread_id: int | None = None,
+    *,
+    strict: bool = False,
+) -> None:
+    """Send media (stored as 'type:file_id') to a chat using the appropriate Telegram method.
+
+    `strict` decides who is owed an answer when it fails. Relaying *to* staff is strict: the person
+    who sent the photo is sitting there waiting, and a swallowed failure tells them it went through.
+    Relaying to a buyer is not: they are not waiting on this call, and a blocked bot must not take
+    down the rest of the reply.
+    """
     if ":" not in media_id:
         media_id = f"document:{media_id}"
 
@@ -43,6 +56,8 @@ async def _send_media(bot: Bot, chat_id: int, media_id: str, message_thread_id: 
             await bot.send_document(chat_id, file_id, message_thread_id=message_thread_id)
     except TelegramAPIError as exc:
         logger.error("Failed to send media to chat %s (%s)", chat_id, exc)
+        if strict:
+            raise
 
 
 def _field(value: object | None, label: str) -> str:
@@ -80,6 +95,42 @@ def format_topic_name(ticket_number: str, user: User) -> str:
     handle staff quote back; the username is the human-readable half."""
     who = f"@{user.username}" if user.username else f"id {user.telegram_id}"
     return f"{ticket_number} · {who}"[:128]
+
+
+class ActiveThread(NamedTuple):
+    """The one conversation a user already has running, whichever kind it is.
+
+    `kind` is "warranty" or "ticket" so the caller can say which one is in the way — being told
+    "you already have something open" without being told what is how a user ends up convinced the
+    bot is broken.
+    """
+
+    kind: str
+    reference: str
+
+
+async def active_thread(session: AsyncSession, user_id: int) -> ActiveThread | None:
+    """What is blocking this user from opening something new, or None if nothing is.
+
+    One live conversation per person, whether it started as a warranty claim or a plain ticket.
+    Staff answer in one thread; a second one opened alongside it splits the same person across two
+    places, and the relay can only carry their replies into one of them — so the other silently
+    goes nowhere. This is the check that keeps that from ever being reachable.
+
+    Warranty first, because a claim under review is the more specific state and the one with its
+    own resolution path (/done, /reject) that a plain "close the ticket" would not settle.
+    """
+    from app.database.repositories.warranty_repo import WarrantyRepo
+
+    claim = await WarrantyRepo(session).get_claim_under_review(user_id)
+    if claim is not None:
+        ticket = await SupportRepo(session).get_by_id(claim.claim_ticket_id) if claim.claim_ticket_id else None
+        return ActiveThread("warranty", ticket.ticket_number if ticket else f"#{claim.id}")
+
+    ticket = await SupportRepo(session).get_open_for_user(user_id)
+    if ticket is not None:
+        return ActiveThread("ticket", ticket.ticket_number)
+    return None
 
 
 class NewTicket(NamedTuple):
@@ -150,7 +201,7 @@ async def create_ticket(
     if support_group_id is None:
         logger.error("SUPPORT_GROUP_ID is unset — ticket %s has nowhere to go.", ticket.ticket_number)
         body = f"⚠️ SUPPORT_GROUP_ID is unset.\n\n{header}\n\n{escape(subject)}"
-        return NewTicket(ticket, await _notify_admins(bot, body))
+        return await _settle_undelivered(session, ticket, await _notify_admins(bot, body))
 
     try:
         # Identity card first, the user's own words second — two messages, so the opening message
@@ -165,9 +216,29 @@ async def create_ticket(
             exc,
         )
         body = f"⚠️ Support group unreachable ({escape(str(exc))}).\n\n{header}\n\n{escape(subject)}"
-        return NewTicket(ticket, await _notify_admins(bot, body))
+        return await _settle_undelivered(session, ticket, await _notify_admins(bot, body))
 
     return NewTicket(ticket, True)
+
+
+async def _settle_undelivered(
+    session: AsyncSession, ticket: SupportTicket, reached_staff: bool
+) -> NewTicket:
+    """Decide what to do with a ticket the support group refused.
+
+    If the admin fallback DM got through, a human knows about it and the ticket is a live thread
+    like any other. If nothing reached anybody, it is a thread with no other end — and since one
+    live thread is all a user is allowed, leaving it open would lock them out of support entirely
+    on the strength of a message nobody ever received. So it is closed here, immediately, and the
+    caller tells them to try again later. The row and the user's words stay on file either way.
+    """
+    if reached_staff:
+        return NewTicket(ticket, True)
+    ticket.status = TicketStatus.CLOSED
+    ticket.closed_at = datetime.now(UTC)
+    ticket.close_reason = "Undeliverable: support group and admin fallback both unreachable"
+    await session.flush()
+    return NewTicket(ticket, False)
 
 
 async def relay_user_message(
@@ -193,21 +264,32 @@ async def relay_user_message(
         created_at=now,
     )
 
+    # A relay that fails has to say so. The message is on file either way — that is what the row
+    # above is — but a deleted topic, a revoked bot, or a mistyped group id all used to end here
+    # as a log line and nothing else: the user saw their message sit in the chat looking sent,
+    # waited for a reply that could not come, and the only evidence was on the server.
     settings = get_settings()
-    if settings.support_group_id is not None:
-        try:
-            if attachment_file_ids:
-                for media_id in attachment_file_ids:
-                    await _send_media(bot, settings.support_group_id, media_id, message_thread_id=ticket.topic_id)
-            if text:
-                await bot.send_message(settings.support_group_id, escape(text), message_thread_id=ticket.topic_id)
-        except TelegramAPIError as exc:
-            logger.error(
-                "Couldn't relay message to SUPPORT_GROUP_ID=%s for ticket %s (%s)",
-                settings.support_group_id,
-                ticket.ticket_number,
-                exc,
-            )
+    if settings.support_group_id is None:
+        logger.error("SUPPORT_GROUP_ID is unset — ticket %s cannot be relayed.", ticket.ticket_number)
+        raise UserError("support.system_unavailable")
+
+    try:
+        if attachment_file_ids:
+            for media_id in attachment_file_ids:
+                await _send_media(
+                    bot, settings.support_group_id, media_id, ticket.topic_id, strict=True
+                )
+        if text:
+            await bot.send_message(settings.support_group_id, escape(text), message_thread_id=ticket.topic_id)
+    except TelegramAPIError as exc:
+        logger.error(
+            "Couldn't relay message to SUPPORT_GROUP_ID=%s topic=%s for ticket %s (%s)",
+            settings.support_group_id,
+            ticket.topic_id,
+            ticket.ticket_number,
+            exc,
+        )
+        raise UserError("support.system_unavailable") from exc
 
 
 async def relay_staff_message(

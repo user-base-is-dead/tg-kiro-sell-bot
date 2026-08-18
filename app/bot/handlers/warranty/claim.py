@@ -9,7 +9,8 @@ from app.core.config import get_settings
 from app.database.models.order import Warranty, WarrantyStatus
 from app.database.models.user import User
 from app.database.repositories.warranty_repo import WarrantyRepo
-from app.services.support_service import create_ticket
+from app.locales.i18n import t
+from app.services.support_service import active_thread, create_ticket
 from app.services.warranty_service import CLAIM_GRACE, format_duration, is_expired, now_utc, open_claim
 from app.utils.money import format_minor
 from app.utils.time import as_utc
@@ -76,6 +77,17 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
         await query.answer("This warranty has expired.", show_alert=True)
         return
 
+    # Same one-conversation rule the ticket screen enforces, checked from this side too — a claim
+    # opened alongside a live ticket would split this person across two threads, and their replies
+    # can only be carried into one of them.
+    active = await active_thread(session, user.id)
+    if active is not None:
+        await query.answer(
+            t(f"support.blocked_by_{active.kind}", user.locale, reference=active.reference),
+            show_alert=True,
+        )
+        return
+
     remaining = format_duration(int((as_utc(warranty.expires_at) - now).total_seconds()))
 
     ticket, reached_staff = await create_ticket(
@@ -87,6 +99,14 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
         support_group_id=get_settings().support_group_id,
     )
 
+    if not reached_staff:
+        # Nobody was told, so nothing is under review. Filing the claim anyway would put the
+        # warranty into CLAIMED — freezing its countdown display and blocking every other request
+        # this user could make — on the strength of a message that reached no one. The warranty is
+        # left exactly as it was and they are asked to come back.
+        await query.answer(t("support.system_unavailable", user.locale), show_alert=True)
+        return
+
     open_claim(warranty, ticket_id=ticket.id, at=now)
     await session.flush()
 
@@ -95,9 +115,6 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
         "⏱️ Our team will respond within "
         f"{grace_hours} hours. If nobody responds in time the claim is closed automatically and "
         "your warranty simply carries on from where it stands."
-        if reached_staff
-        else "⚠️ We couldn't reach the support team automatically — please contact Customer Support "
-        "with your ticket number."
     )
 
     text = (

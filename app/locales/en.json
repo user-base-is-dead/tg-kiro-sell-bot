@@ -82,7 +82,10 @@
     "ticket_category": "📂 Category: {category}",
     "ticket_conversation": "💬 <b>Conversation</b>",
     "ticket_hint_open": "✍️ Reply here in the chat and your message goes straight to our team — no need to open a second ticket.",
-    "ticket_hint_closed": "🔒 This ticket is closed, so replies won't reach us. Open a fresh one from 💬 Live Chat if you still need a hand."
+    "ticket_hint_closed": "🔒 This ticket is closed, so replies won't reach us. Open a fresh one from 💬 Live Chat if you still need a hand.",
+    "system_unavailable": "⚠️ There's a temporary issue with the support system. Our admin is working to fix it — please try again later.",
+    "blocked_by_ticket": "You already have an open ticket ({reference}). Just reply here to continue it — we handle one at a time, and you can open a new one once this is closed.",
+    "blocked_by_warranty": "Your warranty claim ({reference}) is still under review. We handle one request at a time — once it's resolved you can open a new ticket."
   },
   "referral": {
     "screen_title": "🔗 <b>Refer & Earn</b>",

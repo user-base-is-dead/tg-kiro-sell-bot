@@ -34,6 +34,20 @@ class WarrantyRepo:
         result = await self._session.execute(select(Warranty).where(Warranty.claim_ticket_id == ticket_id))
         return result.scalar_one_or_none()
 
+    async def get_claim_under_review(self, user_id: int) -> Warranty | None:
+        """This user's warranty claim that staff have not decided yet, if there is one.
+
+        Asked of the warranty rather than of its ticket because the two can come apart: the idle
+        sweep can close a claim's thread while the claim itself is still CLAIMED, and a claim under
+        review is under review whether or not its thread is still open.
+        """
+        result = await self._session.execute(
+            select(Warranty)
+            .where(Warranty.user_id == user_id, Warranty.status == WarrantyStatus.CLAIMED)
+            .order_by(Warranty.claim_started_at.desc())
+        )
+        return result.scalars().first()
+
     async def list_claims_past_deadline(self, now: datetime) -> list[Warranty]:
         """Claims whose staff-response window has elapsed. Driven by the stored deadline rather than
         by re-deriving one from `claim_started_at`, so the window is whatever it was when the claim

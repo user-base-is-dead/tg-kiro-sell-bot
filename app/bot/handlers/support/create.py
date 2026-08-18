@@ -16,9 +16,8 @@ from app.bot.states.ticket_form import TicketForm
 from app.bot.texts import NO_PREVIEW, home_body
 from app.core.config import get_settings
 from app.database.models.user import User
-from app.database.repositories.support_repo import SupportRepo
 from app.locales.i18n import t
-from app.services.support_service import create_ticket
+from app.services.support_service import active_thread, create_ticket
 
 router = Router(name="support.create")
 
@@ -53,9 +52,15 @@ async def nav_support(query: CallbackQuery, callback_data: NavCB, user: User) ->
 
 @router.callback_query(SupportCB.filter((F.action == "create") & (F.category == "")))
 async def start_create(query: CallbackQuery, session: AsyncSession, user: User) -> None:
-    existing = await SupportRepo(session).get_open_for_user(user.id)
-    if existing is not None:
-        await query.answer(f"You already have an open ticket: {existing.ticket_number}. Just reply to chat.", show_alert=True)
+    # One live conversation per person, whichever kind it is. A warranty claim counts: it is a
+    # thread with staff in it, and it has its own ending (/done, /reject) that closing a ticket
+    # would not reach.
+    active = await active_thread(session, user.id)
+    if active is not None:
+        await query.answer(
+            t(f"support.blocked_by_{active.kind}", user.locale, reference=active.reference),
+            show_alert=True,
+        )
         return
 
     rows = [[btn(cat, SupportCB(action="create", category=cat).pack(), PRIMARY)] for cat in _CATEGORIES]
@@ -108,6 +113,10 @@ async def receive_subject(message: Message, state: FSMContext, session: AsyncSes
         support_group_id=get_settings().support_group_id,
     )
     # Never a bare "✅ opened" on the strength of the database row alone — if nobody was reachable,
-    # the user is waiting for a reply that is not coming, and has no way to tell.
-    key = "support.created" if reached_staff else "support.created_undelivered"
-    await message.answer(t(key, user.locale, ticket_number=ticket.ticket_number))
+    # the user is waiting for a reply that is not coming, and has no way to tell. The ticket is
+    # closed again in that case (see `_settle_undelivered`), so this really is "try again", not a
+    # brush-off: there is nothing left holding their slot.
+    if not reached_staff:
+        await message.answer(t("support.system_unavailable", user.locale))
+        return
+    await message.answer(t("support.created", user.locale, ticket_number=ticket.ticket_number))
