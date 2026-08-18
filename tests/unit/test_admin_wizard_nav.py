@@ -28,10 +28,16 @@ async def _clean_slate(monkeypatch, dispatcher: Dispatcher):
     shares one storage key, so the previous test's data would otherwise still be there."""
     from app.bot.handlers.admin import products
 
-    async def _count(_session, **_kw) -> int:
+    async def _zero(_session, *_a, **_kw) -> int:
         return 0
 
-    monkeypatch.setattr(products, "_count_products", _count)
+    async def _none(_session, *_a, **_kw) -> list:
+        return []
+
+    for name in ("_count_products", "_count_loose", "_count_in_category"):
+        monkeypatch.setattr(products, name, _zero)
+    for name in ("_list_page", "_list_loose", "_list_categories", "_list_in_category"):
+        monkeypatch.setattr(products, name, _none)
     await _context(dispatcher).clear()
     yield
     await _context(dispatcher).clear()

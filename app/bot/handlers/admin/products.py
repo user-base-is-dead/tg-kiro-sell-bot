@@ -157,41 +157,69 @@ def _step_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _list_keyboard(products: list, page: Page, *, name_like: str | None = None) -> InlineKeyboardMarkup:
-    rows = []
-    for p in products:
-        dot = "🟢" if p.is_active else "⚫"
-        rows.append(
-            [
-                btn(
-                    f"{dot} {p.name} — {format_minor(p.price_minor, p.currency)}",
-                    AdminProductCB(action="view", id=str(p.id)).pack(),
-                    PRIMARY if p.is_active else NEUTRAL,
-                )
-            ]
-        )
-    nav = []
-    if page.has_prev:
-        nav.append(btn("◀️", AdminProductCB(action="list", page=page.clamped_page - 1).pack(), PRIMARY))
-    if page.total_pages > 1:
-        nav.append(btn(f"{page.clamped_page}/{page.total_pages}", "noop", NEUTRAL))
-    if page.has_next:
-        nav.append(btn("▶️", AdminProductCB(action="list", page=page.clamped_page + 1).pack(), PRIMARY))
-    if nav:
-        rows.append(nav)
+# Telegram's own ceiling for a button label. Names here are admin-written and run long — "Chatgpt
+# plus 1months (apple pay) 7days Warranty" — so the label is composed tail-first and the name is
+# what gives way, never the price or the stock count.
+_MAX_LABEL = 64
 
-    rows.append([btn("➕ Add Product", AdminProductCB(action="add").pack(), SUCCESS)])
-    rows.append(
+
+async def _product_button(session: AsyncSession, product) -> InlineKeyboardButton:
+    """One product, with the two numbers the admin actually came to check.
+
+    The list used to show only a dot and a price, which made two products called "Kiro Pro" at
+    different prices impossible to tell apart, and said nothing about stock — the one thing that
+    decides whether a listed product is really for sale. Finding out meant opening each in turn.
+    """
+    view = await compute_display_status(session, product)
+    if product.manual_stock is None and product.fulfillment_mode is FulfillmentMode.MANUAL:
+        stock = "on demand"
+    else:
+        stock = f"{view.available_stock} left"
+
+    dot = "🟢" if product.is_active else "⚫"
+    tail = f" — {format_minor(product.price_minor, product.currency)} · {stock}"
+    room = _MAX_LABEL - len(dot) - 1 - len(tail)
+    name = product.name if len(product.name) <= room else product.name[: max(1, room - 1)] + "…"
+    return btn(
+        f"{dot} {name}{tail}",
+        AdminProductCB(action="view", id=str(product.id)).pack(),
+        PRIMARY if product.is_active else NEUTRAL,
+    )
+
+
+def _page_nav(page: Page, action: str, category_id: str = "") -> list[InlineKeyboardButton]:
+    nav: list[InlineKeyboardButton] = []
+    if page.total_pages <= 1:
+        return nav
+    # The arrows are laid out as a fixed three-slot row rather than appearing and disappearing:
+    # with only "1/2 ▶️" on the first page the indicator sat off-centre and the row jumped sideways
+    # on every page turn.
+    nav.append(
+        btn("◀️", AdminProductCB(action=action, id=category_id, page=page.clamped_page - 1).pack(), PRIMARY)
+        if page.has_prev
+        else btn(" ", "noop", NEUTRAL)
+    )
+    nav.append(btn(f"{page.clamped_page}/{page.total_pages}", "noop", NEUTRAL))
+    nav.append(
+        btn("▶️", AdminProductCB(action=action, id=category_id, page=page.clamped_page + 1).pack(), PRIMARY)
+        if page.has_next
+        else btn(" ", "noop", NEUTRAL)
+    )
+    return nav
+
+
+def _tools_rows(name_like: str | None = None) -> list[list[InlineKeyboardButton]]:
+    """The management tools, identical on every products screen so they never move under the thumb."""
+    search_label = f"🔍 Filtered: {name_like}" if name_like else "🔍 Search"
+    return [
+        [btn("➕ Add Product", AdminProductCB(action="add").pack(), SUCCESS)],
         [
             btn("📥 Import CSV", AdminProductCB(action="import").pack(), PRIMARY),
             btn("📤 Export CSV", AdminProductCB(action="export").pack(), PRIMARY),
-        ]
-    )
-    # The search button doubles as the way out of a filter, so its label reflects the active one.
-    search_label = f"🔍 Filtered: {name_like}" if name_like else "🔍 Search"
-    rows.append([btn(search_label, AdminProductCB(action="search").pack(), PRIMARY)])
-    rows.append(nav_row("en", back_target="admin_panel", home=False))
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        ],
+        [btn(search_label, AdminProductCB(action="search").pack(), PRIMARY)],
+        nav_row("en", back_target="admin_panel", home=False),
+    ]
 
 def _fulfillment_label(product, credentials: int) -> str:
     """What will actually happen to the next orders, not just which mode is stored.
@@ -273,31 +301,146 @@ async def _list_page(
     return await ProductRepo(session).list_page(offset=offset, limit=limit, name_like=name_like)
 
 
+# The grouped list needs four more queries, and they go through seams for the same reason the first
+# two did: a screen-copy test renders this list with no database behind it. `active_only=False`
+# everywhere — an admin's list that hid disabled products would hide the ones needing attention.
+async def _count_loose(session: AsyncSession) -> int:
+    return await ProductRepo(session).count_uncategorized(active_only=False)
+
+
+async def _list_loose(session: AsyncSession, *, offset: int, limit: int) -> list:
+    return await ProductRepo(session).list_uncategorized(
+        offset=offset, limit=limit, active_only=False
+    )
+
+
+async def _list_categories(session: AsyncSession) -> list:
+    return await CategoryRepo(session).list_all()
+
+
+async def _count_in_category(session: AsyncSession, category_id: int) -> int:
+    return await ProductRepo(session).count_by_category(category_id, active_only=False)
+
+
+async def _list_in_category(
+    session: AsyncSession, category_id: int, *, offset: int, limit: int
+) -> list:
+    return await ProductRepo(session).list_by_category(
+        category_id, offset=offset, limit=limit, active_only=False
+    )
+
+
 async def _render_list(
     session: AsyncSession, page_num: int, *, name_like: str | None = None
 ) -> tuple[str, InlineKeyboardMarkup]:
+    """The catalog as it is actually shaped: loose products out in the open, categories as folders.
+
+    A flat list of everything is fine at ten products and unusable at eighty — one wall of buttons
+    with no grouping, where the only way to find the Kiro products is to remember which page they
+    were on. This mirrors the store and the broadcast picker, so the same catalog looks the same
+    everywhere.
+
+    A search is the exception and stays flat: the whole point of searching is to reach across
+    categories, and folding results back into folders would hide the match that was asked for.
+    """
+    if name_like:
+        return await _render_search(session, page_num, name_like)
+
+    total = await _count_products(session)
+    loose_total = await _count_loose(session)
+    page = Page(page=page_num, page_size=PAGE_SIZE, total_items=loose_total)
+    loose = (
+        await _list_loose(session, offset=page.offset, limit=PAGE_SIZE) if loose_total else []
+    )
+    categories = await _list_categories(session)
+
+    rows = [[await _product_button(session, p)] for p in loose]
+    if nav := _page_nav(page, "list"):
+        rows.append(nav)
+
+    if categories:
+        if loose:
+            rows.append([btn("─────────────", "noop", NEUTRAL)])
+        folders = []
+        for category in categories:
+            count = await _count_in_category(session, category.id)
+            mark = "" if category.is_active else "⚫ "
+            folders.append(
+                btn(
+                    f"{mark}{category.emoji or '📂'} {category.name} ({count})",
+                    AdminProductCB(action="cat", id=str(category.id)).pack(),
+                    PRIMARY,
+                )
+            )
+        rows += [folders[i : i + 2] for i in range(0, len(folders), 2)]
+
+    rows += _tools_rows()
+
+    filed = total - loose_total
+    text = (
+        "📦 <b>PRODUCT MANAGEMENT</b>\n\n"
+        f"{total} product(s) — {loose_total} loose, {filed} in {len(categories)} category folder(s).\n\n"
+        "Tap a product to edit it, or open a folder to see what is inside.\n"
+        "🟢 active · ⚫ hidden from buyers · <b>N left</b> = sellable stock right now\n\n"
+        "➕ <b>Add Product</b> — create one, stock included\n"
+        "📥 <b>Import CSV</b> / 📤 <b>Export CSV</b> — edit the whole catalog in one file\n"
+        "🔍 <b>Search</b> — find a product by name, across every folder"
+    )
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _render_search(
+    session: AsyncSession, page_num: int, name_like: str
+) -> tuple[str, InlineKeyboardMarkup]:
     total = await _count_products(session, name_like=name_like)
     page = Page(page=page_num, page_size=PAGE_SIZE, total_items=total)
-    # Nothing to fetch when the count is zero, so the page query is skipped entirely.
     products = (
         await _list_page(session, offset=page.offset, limit=PAGE_SIZE, name_like=name_like)
         if total
         else []
     )
 
-    filter_line = f"🔍 Filtered by “{name_like}” — tap the filter button to clear it.\n" if name_like else ""
+    rows = [[await _product_button(session, p)] for p in products]
+    if nav := _page_nav(page, "list"):
+        rows.append(nav)
+    rows += _tools_rows(name_like)
+
     text = (
         "📦 <b>PRODUCT MANAGEMENT</b>\n\n"
-        f"{total} product(s) total.\n{filter_line}\n"
-        "Tap any product to see its stock, price and status, or to edit, disable or delete it.\n\n"
-        "<b>Buttons:</b>\n"
-        "➕ <b>Add Product</b> — walk through creating one product, stock included\n"
-        "📥 <b>Import CSV</b> — upload a file to create or update products in bulk\n"
-        "📤 <b>Export CSV</b> — download every product in that same format, edit it, re-upload\n"
-        "🔍 <b>Search</b> — filter this list by name\n\n"
-        "🟢 = active and visible to buyers · ⚫ = disabled and hidden"
+        f"🔍 {total} match(es) for “{name_like}”, from every category.\n\n"
+        "Tap the filter button below to clear it and go back to the folders."
     )
-    return text, _list_keyboard(products, page, name_like=name_like)
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _render_category(
+    session: AsyncSession, category_id: int, page_num: int
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    category = await CategoryRepo(session).get_by_id(category_id)
+    if category is None:
+        return None
+
+    total = await _count_in_category(session, category_id)
+    page = Page(page=page_num, page_size=PAGE_SIZE, total_items=total)
+    products = (
+        await _list_in_category(session, category_id, offset=page.offset, limit=PAGE_SIZE)
+        if total
+        else []
+    )
+
+    rows = [[await _product_button(session, p)] for p in products]
+    if nav := _page_nav(page, "cat", str(category_id)):
+        rows.append(nav)
+    # Not a 🔙, and not red: the tools row below already ends in a red Back to the admin panel, and
+    # two red back-arrows one above the other are a coin toss over which screen you land on.
+    rows.append([btn("📦 All products", AdminProductCB(action="list").pack(), PRIMARY)])
+    rows += _tools_rows()
+
+    emoji = category.emoji or "📂"
+    hidden = "" if category.is_active else "\n⚫ This category is hidden from buyers.\n"
+    body = f"{total} product(s) in here." if total else "Nothing filed here yet."
+    text = f"{emoji} <b>{category.name.upper()}</b>\n{hidden}\n{body}"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, InlineKeyboardMarkup] | None:
     product = await ProductRepo(session).get_by_id(product_id)
@@ -348,6 +491,22 @@ async def list_products(
     read back here — that is what keeps paging inside a filtered set filtered."""
     name_like = (await state.get_data()).get("product_filter")
     text, markup = await _render_list(session, callback_data.page, name_like=name_like)
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+
+
+@router.callback_query(AdminProductCB.filter(F.action == "cat"))
+async def list_category(
+    query: CallbackQuery, callback_data: AdminProductCB, state: FSMContext, session: AsyncSession
+) -> None:
+    """Inside one folder. Opening a folder drops any active search — the two are different questions
+    and leaving the filter on made a folder look half-empty for no visible reason."""
+    await state.update_data(product_filter=None)
+    rendered = await _render_category(session, int(callback_data.id), callback_data.page)
+    if rendered is None:
+        await query.answer("Category not found.", show_alert=True)
+        return
+    text, markup = rendered
     await query.message.edit_text(text, reply_markup=markup)
     await query.answer()
 

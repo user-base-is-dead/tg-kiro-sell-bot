@@ -38,7 +38,8 @@ class AdminCategoryCB(CallbackData, prefix="acat"):
 
 class AdminProductCB(CallbackData, prefix="aprod"):
     # "delete" only asks for confirmation; "delete_ok" is the one that actually removes the row.
-    action: str  # "list" | "add" | "edit" | "delete" | "delete_ok" | "toggle" | "view" | "stock"
+    # "cat" opens one category folder in the admin list; `id` is the category, not a product.
+    action: str  # "list" | "cat" | "add" | "edit" | "delete" | "delete_ok" | "toggle" | "view" | "stock"
     id: str = ""
     page: int = 1
 

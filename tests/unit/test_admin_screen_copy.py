@@ -1,15 +1,31 @@
 from __future__ import annotations
 
 
+def _stub_queries(monkeypatch, products) -> None:
+    """Render the products screen with no database behind it.
+
+    Every query it makes goes through a module-level seam for exactly this, so a screen-copy test
+    can assert on wording without standing up a catalog.
+    """
+
+    async def _zero(_session, *_a, **_kw):
+        return 0
+
+    async def _none(_session, *_a, **_kw):
+        return []
+
+    for name in ("_count_products", "_count_loose", "_count_in_category"):
+        monkeypatch.setattr(products, name, _zero)
+    for name in ("_list_page", "_list_loose", "_list_categories", "_list_in_category"):
+        monkeypatch.setattr(products, name, _none)
+
+
 async def test_product_screen_explains_what_the_buttons_do(monkeypatch) -> None:
     """The whole body used to be "5 products total." — the panel above it documents every button,
     and the screens below it documented nothing."""
     import app.bot.handlers.admin.products as products
 
-    async def _fake_count(_session, **_kw):
-        return 0
-
-    monkeypatch.setattr(products, "_count_products", _fake_count)
+    _stub_queries(monkeypatch, products)
 
     text, _ = await products._render_list(None, 1)
 
@@ -23,10 +39,7 @@ async def test_product_screen_names_every_button_it_shows(monkeypatch) -> None:
     the original complaint. The copy and the keyboard have to agree."""
     import app.bot.handlers.admin.products as products
 
-    async def _fake_count(_session, **_kw):
-        return 0
-
-    monkeypatch.setattr(products, "_count_products", _fake_count)
+    _stub_queries(monkeypatch, products)
 
     text, markup = await products._render_list(None, 1)
     labels = [b.text for row in markup.inline_keyboard for b in row]
@@ -43,10 +56,7 @@ async def test_search_filter_is_visible_when_active(monkeypatch) -> None:
     products have vanished."""
     import app.bot.handlers.admin.products as products
 
-    async def _fake_count(_session, **_kw):
-        return 0
-
-    monkeypatch.setattr(products, "_count_products", _fake_count)
+    _stub_queries(monkeypatch, products)
 
     text, markup = await products._render_list(None, 1, name_like="kiro")
     labels = [b.text for row in markup.inline_keyboard for b in row]

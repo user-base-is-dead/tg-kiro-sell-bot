@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.utils.pagination import Page
 
 
 def _targets(markup) -> list[str]:
@@ -9,11 +8,13 @@ def _targets(markup) -> list[str]:
 
 def test_product_list_offers_a_way_back() -> None:
     """These four screens were dead ends: the only way out was retyping /admin."""
-    from app.bot.handlers.admin.products import _list_keyboard
+    from app.bot.handlers.admin.products import _tools_rows
 
-    markup = _list_keyboard([], Page(page=1, page_size=10, total_items=0))
+    # The tools row is shared by the list, the search results and every category folder, so this
+    # one assertion covers the way out of all three.
+    targets = [b.callback_data for row in _tools_rows() for b in row if b.callback_data]
 
-    assert "nav:admin_panel" in _targets(markup)
+    assert "nav:admin_panel" in targets
 
 
 def test_category_list_offers_a_way_back() -> None:

@@ -16,20 +16,19 @@ USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955"
 # which is the point: the fee never visibly moves.
 #
 # NEAR is the safety net for when the wallet does not send what we asked. Trust Wallet and friends
-# round to their own display precision, swap-and-send paths take a spread, and an exchange
-# withdrawal deducts its own fee from the amount rather than adding it on top — on BEP-20 that runs
-# to about $0.20. Any of those destroys the fingerprint, so those transfers are matched on the
-# amount alone with room for the largest cut a BEP-20 transfer realistically takes.
+# round to their own display precision and a BEP-20 transfer can arrive a cent or so light —
+# usually $0.01, occasionally $0.02 or $0.03. Any of that destroys the fingerprint, so those
+# transfers are matched on the cents alone with room for the largest cut actually observed.
 #
-# Twenty cents is also exactly the service fee, which is what makes crediting the full invoice safe
-# to do: the worst case is that this order earns nothing, never that it costs money. A buyer is
-# never told to send the difference over a deduction they did not choose and cannot see.
+# Three cents is far inside the service fee, so crediting the full invoice is safe: the worst case
+# is a few cents off one order's margin, never a loss. A buyer is never told to send the difference
+# over a deduction they did not choose and cannot see.
 #
 # The catch is that NEAR is far wider than the gap between two fingerprints, so a mangled transfer
 # can look like several invoices at once. That is why it is a fallback and not the primary rule: an
 # exact hit is taken outright, and a near hit only counts when exactly one invoice is in range.
 EXACT_TOLERANCE = 0.00004
-MATCH_TOLERANCE = 0.20
+MATCH_TOLERANCE = 0.03
 
 # keccak256("Transfer(address,address,uint256)")
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -129,8 +128,8 @@ class BlockchainMonitor:
         """Whether this transfer pays this invoice to the cent, fingerprint ignored.
 
         The comparison is rounded to cents before it is made because the naive float form quietly
-        excludes the exact edge: 5.20 - 5.00 comes out as 0.20000000000000018, which is larger than
-        a tolerance of 0.20, so the buyer whose transfer lost exactly the maximum cut — the case
+        excludes the exact edge: 5.20 - 5.18 comes out as 0.02000000000000046, which is larger than
+        a tolerance of 0.02, so a buyer whose transfer lost exactly the tolerated amount — the case
         this window exists for — would be refused by a rounding artefact. Sub-cent dust on the
         transfer itself is rounded away with it, which is the intent: nobody invoices fractions of
         a cent.
