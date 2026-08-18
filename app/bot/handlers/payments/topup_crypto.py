@@ -169,7 +169,7 @@ async def render_payment_details(
         f"🏷️ <b>Service Fee:</b> ${fee:.2f}\n"
         f"📊 <b>Total to Send:</b>\n"
         f"👉 <code>{total_amount:.4f}</code> <b>USDT</b>\n\n"
-        f"📋 <b>Tap the amount above to copy it</b>, then paste it into the amount field of your "
+        f"📋 <b>Use the Copy amount button below</b>, then paste it into the amount field of your "
         f"wallet. Do not type it by hand and do not round it — those last few decimals are what "
         f"tells us this payment is {'this order' if buying else 'yours'} and not somebody "
         f"else's.\n\n"
@@ -179,9 +179,15 @@ async def render_payment_details(
         "so a cent or two either way is nothing to worry about."
     )
 
-    from app.bot.keyboards.styles import SUCCESS, btn
+    from app.bot.keyboards.styles import NEUTRAL, SUCCESS, btn, copy_btn
 
+    # Both halves of a payment are strings that must arrive intact, and both are ways payments get
+    # lost: a mistyped address sends the money to nobody, and a mistyped amount arrives here as a
+    # transfer we cannot attribute to a buyer. The buttons hand over the whole value, so neither
+    # depends on the buyer selecting text accurately on a phone.
     rows = [
+        [copy_btn(f"📋 Copy amount ({total_amount:.4f})", f"{total_amount:.4f}", NEUTRAL)],
+        [copy_btn("📋 Copy wallet address", monitor.wallet_address, NEUTRAL)],
         [btn("✓ Check Payment Status", f"check_topup_crypto:{payment.id}", SUCCESS)],
         _exit_row(locale, payment.id),
     ]

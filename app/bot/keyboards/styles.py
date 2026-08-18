@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from aiogram.types import InlineKeyboardButton
+from aiogram.types import CopyTextButton, InlineKeyboardButton
 
 # Bot API 9.4 (February 2026) added `style` to InlineKeyboardButton / KeyboardButton, changing the
 # button's color instead of the flat theme default. The exact rendering is up to each client: on
@@ -25,6 +25,18 @@ def btn(text: str, callback_data: str, style: str | None = NEUTRAL) -> InlineKey
     if style not in (PRIMARY, SUCCESS, DANGER, None):
         raise ValueError(f"unsupported button style: {style!r}")
     return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+
+
+def copy_btn(text: str, value: str, style: str | None = PRIMARY) -> InlineKeyboardButton:
+    """A button that puts `value` on the buyer's clipboard, client-side, with no round trip.
+
+    Worth a button rather than leaving it to tap-to-copy on a <code> span: the copy target here is a
+    payment amount whose last decimals are what identify the payer, and a partial selection or a
+    hand-typed digit is a payment nobody can attribute. Telegram guarantees the whole string.
+    """
+    if style not in (PRIMARY, SUCCESS, DANGER, None):
+        raise ValueError(f"unsupported button style: {style!r}")
+    return InlineKeyboardButton(text=text, copy_text=CopyTextButton(text=value), style=style)
 
 
 def url_btn(text: str, url: str, style: str | None = PRIMARY) -> InlineKeyboardButton:
