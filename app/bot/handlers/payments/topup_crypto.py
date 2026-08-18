@@ -175,8 +175,8 @@ async def render_payment_details(
         f"else's.\n\n"
         f"⏱️ <b>Payment expires in:</b> {minutes} minutes\n\n"
         "✅ Payment will be auto-confirmed when received.\n"
-        f"🎯 If your wallet rounds it, anything within ±${MATCH_TOLERANCE:.2f} still confirms — "
-        "so a cent or two either way is nothing to worry about."
+        f"🎯 If your wallet or exchange deducts its own fee, anything within ±${MATCH_TOLERANCE:.2f} "
+        "still confirms and you are credited in full — no need to send the difference."
     )
 
     from app.bot.keyboards.styles import NEUTRAL, SUCCESS, btn, copy_btn

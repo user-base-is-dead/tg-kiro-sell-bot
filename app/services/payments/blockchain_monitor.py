@@ -16,15 +16,20 @@ USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955"
 # which is the point: the fee never visibly moves.
 #
 # NEAR is the safety net for when the wallet does not send what we asked. Trust Wallet and friends
-# round to their own display precision, swap-and-send paths take a spread, and somebody paying $5.20
-# out of a $5.19 balance sends $5.19. Rounding destroys the fingerprint, so those transfers are
-# matched on the cents alone, two cents either way.
+# round to their own display precision, swap-and-send paths take a spread, and an exchange
+# withdrawal deducts its own fee from the amount rather than adding it on top — on BEP-20 that runs
+# to about $0.20. Any of those destroys the fingerprint, so those transfers are matched on the
+# amount alone with room for the largest cut a BEP-20 transfer realistically takes.
 #
-# The catch is that NEAR is far wider than the gap between two fingerprints, so a rounded transfer
+# Twenty cents is also exactly the service fee, which is what makes crediting the full invoice safe
+# to do: the worst case is that this order earns nothing, never that it costs money. A buyer is
+# never told to send the difference over a deduction they did not choose and cannot see.
+#
+# The catch is that NEAR is far wider than the gap between two fingerprints, so a mangled transfer
 # can look like several invoices at once. That is why it is a fallback and not the primary rule: an
 # exact hit is taken outright, and a near hit only counts when exactly one invoice is in range.
 EXACT_TOLERANCE = 0.00004
-MATCH_TOLERANCE = 0.02
+MATCH_TOLERANCE = 0.20
 
 # keccak256("Transfer(address,address,uint256)")
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -124,9 +129,10 @@ class BlockchainMonitor:
         """Whether this transfer pays this invoice to the cent, fingerprint ignored.
 
         The comparison is rounded to cents before it is made because the naive float form quietly
-        excludes the exact edge: 5.20 - 5.18 comes out as 0.02000000000000046, which is larger than
-        a tolerance of 0.02, so the buyer who paid two cents light — the case this window exists
-        for — would be refused by a rounding artefact. Sub-cent dust on the transfer itself is
-        rounded away with it, which is the intent: nobody invoices fractions of a cent.
+        excludes the exact edge: 5.20 - 5.00 comes out as 0.20000000000000018, which is larger than
+        a tolerance of 0.20, so the buyer whose transfer lost exactly the maximum cut — the case
+        this window exists for — would be refused by a rounding artefact. Sub-cent dust on the
+        transfer itself is rounded away with it, which is the intent: nobody invoices fractions of
+        a cent.
         """
         return round(abs(transfer_amount - expected_amount), 2) <= self.tolerance + 1e-9
