@@ -15,6 +15,7 @@ from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.database.models.catalog import FulfillmentMode
 from app.database.models.user import User
 from app.database.repositories.product_repo import ProductRepo
+from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import _load, t
 from app.services import announcement_service, order_service, stock_hold_service
@@ -27,6 +28,10 @@ router = Router(name="orders.checkout")
 
 
 MAX_MADE_TO_ORDER_QTY = 99
+
+# Characters that can only be someone trying to answer "how many?", however badly. A message
+# containing anything else was aimed at a person, not at this prompt.
+_QUANTITY_CHARS = set("0123456789 .,-+")
 
 
 async def buyable_quantity(session: AsyncSession, product) -> int:
@@ -269,6 +274,19 @@ async def on_quantity_typed(message: Message, state: FSMContext, session: AsyncS
 
     raw = (message.text or "").strip()
     if not raw.isdigit():
+        # Prose is not a failed attempt at a number, it is a message aimed somewhere else. This
+        # question has no deadline and nothing closes it, so a buyer who pressed Buy Now, wandered
+        # off, and came back hours later to answer support found their words eaten and "send a
+        # whole number" sent back — support never heard from them, and the reason was invisible
+        # from both ends. Anything made only of digits and separators is still treated as a typo
+        # here ("1.5", "2 3"), because that really was someone answering this question.
+        if raw and not set(raw) <= _QUANTITY_CHARS:
+            from app.bot.handlers.support.relay import dm_relay
+
+            if await SupportRepo(session).get_open_for_user(user.id) is not None:
+                await state.clear()
+                await dm_relay(message, session, user)
+                return
         await message.answer("Send a plain whole number — <code>1</code>, <code>2</code>, <code>3</code>.")
         return
 
