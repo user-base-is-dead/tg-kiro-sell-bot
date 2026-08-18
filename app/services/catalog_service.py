@@ -64,6 +64,23 @@ async def compute_display_status(session: AsyncSession, product: Product) -> Pro
     return ProductView(product, 0, status)
 
 
+def stock_detail_line(view: ProductView) -> str:
+    """The "📦 Stock:" line on a product's own screen.
+
+    Reads the same numbers the listing does. It used to branch on `fulfillment_mode` alone, so a
+    MANUAL product said "Made to order" even when the admin had typed a count into it — the one
+    figure a human deliberately set was the one the shopper could not see. "Made to order" is only
+    honest when there is genuinely no number: a MANUAL product with no override.
+    """
+    if view.display_status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        # The status line right below already says "Coming soon"; a "0 remaining" above it reads as
+        # sold out, which is a different (and wrong) thing to tell someone.
+        return ""
+    if view.product.manual_stock is None and view.product.fulfillment_mode == FulfillmentMode.MANUAL:
+        return "📦 Stock: Made to order\n"
+    return f"📦 Stock: <b>{view.available_stock} remaining</b>\n"
+
+
 def stock_label(view: ProductView) -> str:
     """How many are left, in the shopper's words — "" when the number would be meaningless.
 

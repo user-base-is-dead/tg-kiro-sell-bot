@@ -25,22 +25,24 @@ _STATUS_STYLE: dict[ProductStatus, str | None] = {
 }
 
 
+def _product_button(view: ProductView) -> InlineKeyboardButton:
+    """One product, wherever it is listed. Loose products used to be built separately and lost the
+    "· 3 left" the categorised ones carried — the same product read as having no stock information
+    purely because of which category it was filed in."""
+    p = view.product
+    label = f"{STATUS_EMOJI[view.display_status]} {p.name} — {format_minor(p.price_minor, p.currency)}"
+    # The count rides on the button itself so a shopper sees scarcity before tapping in.
+    left = stock_label(view)
+    if left:
+        label += f" · {left}"
+    return btn(label, ProductCB(action="view", id=str(p.id)).pack(), _STATUS_STYLE[view.display_status])
+
+
 def category_grid(categories: list[Category], locale: str, *, loose: list["ProductView"] | None = None):
     rows: list[list[InlineKeyboardButton]] = []
 
     for view in loose or []:
-        p = view.product
-        emoji = STATUS_EMOJI[view.display_status]
-        style = _STATUS_STYLE[view.display_status]
-        rows.append(
-            [
-                btn(
-                    f"{emoji} {p.name} — {format_minor(p.price_minor, p.currency)}",
-                    ProductCB(action="view", id=str(p.id)).pack(),
-                    style,
-                )
-            ]
-        )
+        rows.append([_product_button(view)])
     if loose:
         rows.append([btn("─────────────", "noop", NEUTRAL)])
 
@@ -62,18 +64,7 @@ def category_grid(categories: list[Category], locale: str, *, loose: list["Produ
 
 
 def product_list(views: list[ProductView], category_id: int, page: Page, locale: str):
-    rows: list[list[InlineKeyboardButton]] = []
-    for view in views:
-        p = view.product
-        emoji = STATUS_EMOJI[view.display_status]
-        label = f"{emoji} {p.name} — {format_minor(p.price_minor, p.currency)}"
-        # The count rides on the button itself so a shopper sees scarcity before tapping in.
-        left = stock_label(view)
-        if left:
-            label += f" · {left}"
-        rows.append(
-            [btn(label, ProductCB(action="view", id=str(p.id)).pack(), _STATUS_STYLE[view.display_status])]
-        )
+    rows: list[list[InlineKeyboardButton]] = [[_product_button(view)] for view in views]
 
     if page.total_pages > 1:
         nav: list[InlineKeyboardButton] = []

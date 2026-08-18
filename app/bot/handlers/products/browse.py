@@ -13,7 +13,7 @@ from app.database.models.user import User
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.locales.i18n import t
-from app.services.catalog_service import compute_display_status, stock_label
+from app.services.catalog_service import compute_display_status, stock_detail_line, stock_label
 from app.services import stock_hold_service
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI, STATUS_LABEL
@@ -90,12 +90,7 @@ async def render_product_detail(session: AsyncSession, product_id: int, locale: 
             "automatically — check back shortly. If it completes, this product is sold out."
         )
 
-    # MANUAL products are fulfilled by hand, so there is no pool to count — saying "made to order"
-    # is the honest version of the same line rather than printing a zero that isn't one.
-    if product.fulfillment_mode.value == "MANUAL":
-        stock_line = "📦 Stock: Made to order\n"
-    else:
-        stock_line = f"📦 Stock: <b>{view.available_stock} remaining</b>\n"
+    stock_line = stock_detail_line(view)
     text = (
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🛍️ <b>{product.name.upper()}</b>\n"
