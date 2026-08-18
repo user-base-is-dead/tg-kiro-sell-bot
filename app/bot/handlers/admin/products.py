@@ -436,11 +436,52 @@ async def _render_category(
     rows.append([btn("📦 All products", AdminProductCB(action="list").pack(), PRIMARY)])
     rows += _tools_rows()
 
+    # The same briefing the top-level list carries. A folder is not a lesser screen — every product
+    # inside it is edited from here, and the sold-out count and the ⚫ marks mean what they mean on
+    # both screens, so explaining them on only one of the two is where the confusion starts.
     emoji = category.emoji or "📂"
-    hidden = "" if category.is_active else "\n⚫ This category is hidden from buyers.\n"
-    body = f"{total} product(s) in here." if total else "Nothing filed here yet."
-    text = f"{emoji} <b>{category.name.upper()}</b>\n{hidden}\n{body}"
-    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+    active = sum(1 for p in products if p.is_active)
+    sold_out = 0
+    for product in products:
+        view = await compute_display_status(session, product)
+        if product.is_active and view.display_status is ProductStatus.OUT_OF_STOCK:
+            sold_out += 1
+
+    lines = [f"{emoji} <b>{category.name.upper()}</b>", ""]
+    if not category.is_active:
+        lines += [
+            "⚫ <b>This whole folder is hidden from buyers.</b>",
+            "Enable it under 📁 Categories — until then nothing inside it is for sale, however "
+            "much stock it has.",
+            "",
+        ]
+    if total:
+        lines.append(f"{total} product(s) in here — {active} on sale, {total - active} hidden.")
+        if sold_out:
+            lines.append(
+                f"🔴 {sold_out} of them {'is' if sold_out == 1 else 'are'} live with no stock left. "
+                "Buyers can see those but cannot buy them — add stock or hide them."
+            )
+        lines += [
+            "",
+            "Tap a product to change its price, stock, description or category, or to hide or "
+            "delete it.",
+            "🟢 active · ⚫ hidden from buyers · <b>N left</b> = sellable stock right now",
+        ]
+    else:
+        lines += [
+            "Nothing filed here yet.",
+            "",
+            "Use ➕ <b>Add Product</b> and pick this category on the way through, or open an "
+            "existing product and change its 🏷️ Category to move it in here.",
+        ]
+    lines += [
+        "",
+        "➕ <b>Add Product</b> — create one, stock included",
+        "📥 <b>Import CSV</b> / 📤 <b>Export CSV</b> — edit the whole catalog in one file",
+        "🔍 <b>Search</b> — find a product by name, across every folder",
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, InlineKeyboardMarkup] | None:
     product = await ProductRepo(session).get_by_id(product_id)
