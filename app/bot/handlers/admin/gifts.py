@@ -317,12 +317,10 @@ async def set_items(message: Message, state: FSMContext) -> None:
     # promise the code cannot keep: too high and a claimer burns their redemption on nothing, too
     # low and items are stranded unclaimable.
     await state.update_data(items=lines)
-    await state.set_state(GiftCreateForm.per_user_limit)
-    await message.answer(
-        f"🎁 {len(lines)} item(s) stored — this code can be claimed {len(lines)} time(s).\n\n"
-        f"{_step(await state.get_data(), 'per_user_limit')}\n"
-        f"How many times may a single user claim it? Usually <code>1</code>.{_CANCEL_HINT}"
+    text, markup = await _prompt_per_user_limit(
+        state, prefix=f"🎁 {len(lines)} item(s) stored — this code can be claimed {len(lines)} time(s).\n\n"
     )
+    await message.answer(text, reply_markup=markup)
 
 
 # -- product branch --
@@ -350,6 +348,58 @@ async def set_value(message: Message, state: FSMContext) -> None:
 
 
 # -- shared tail --
+#
+# The last three questions all have an answer that is right almost every time — one claim each, no
+# expiry, no description — so each is offered as a button. Typing still works and means exactly the
+# same thing: the button fills in the default and takes the same path the typed answer would, so
+# the two can't drift apart.
+
+
+def _skip_keyboard(field: str, label: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [btn(label, f"gskip:{field}", PRIMARY)],
+            [btn("❌ Abort", AdminGiftCB(action="list").pack(), DANGER)],
+        ]
+    )
+
+
+async def _prompt_per_user_limit(state: FSMContext, prefix: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    await state.set_state(GiftCreateForm.per_user_limit)
+    return (
+        f"{prefix}{_step(await state.get_data(), 'per_user_limit')}\n"
+        "How many times may a single user claim it? Usually <code>1</code>."
+        f"{_CANCEL_HINT}",
+        _skip_keyboard("pu", "1️⃣ Once per user"),
+    )
+
+
+async def _prompt_expires(state: FSMContext) -> tuple[str, InlineKeyboardMarkup]:
+    await state.set_state(GiftCreateForm.expires_days)
+    return (
+        f"{_step(await state.get_data(), 'expires')}\n"
+        "In how many days should it expire? Send <code>0</code> for never."
+        f"{_CANCEL_HINT}",
+        _skip_keyboard("ex", "♾️ Never expires"),
+    )
+
+
+async def _prompt_description(state: FSMContext) -> tuple[str, InlineKeyboardMarkup]:
+    await state.set_state(GiftCreateForm.description)
+    return (
+        f"{_step(await state.get_data(), 'description')}\n"
+        "Finally, write the description users will read on the claim screen — "
+        "say what they're getting and why.\n\n"
+        "Send <code>-</code> to leave it blank."
+        f"{_CANCEL_HINT}",
+        _skip_keyboard("ds", "⏭️ No description"),
+    )
+
+
+async def _prompt_review(state: FSMContext) -> tuple[str, InlineKeyboardMarkup]:
+    data = await state.get_data()
+    await state.set_state(GiftCreateForm.review)
+    return await _review_text(data), _review_keyboard()
 
 
 @router.message(GiftCreateForm.max_uses)
@@ -359,12 +409,8 @@ async def set_max_uses(message: Message, state: FSMContext) -> None:
         await message.answer("Send a positive whole number, e.g. <code>50</code>:")
         return
     await state.update_data(max_uses=int(text))
-    await state.set_state(GiftCreateForm.per_user_limit)
-    await message.answer(
-        f"{_step(await state.get_data(), 'per_user_limit')}\n"
-        "How many times may a single user claim it? Usually <code>1</code>."
-        f"{_CANCEL_HINT}"
-    )
+    prompt, markup = await _prompt_per_user_limit(state)
+    await message.answer(prompt, reply_markup=markup)
 
 
 @router.message(GiftCreateForm.per_user_limit)
@@ -374,12 +420,8 @@ async def set_per_user_limit(message: Message, state: FSMContext) -> None:
         await message.answer("Send a positive whole number, e.g. <code>1</code>:")
         return
     await state.update_data(per_user_limit=int(text))
-    await state.set_state(GiftCreateForm.expires_days)
-    await message.answer(
-        f"{_step(await state.get_data(), 'expires')}\n"
-        "In how many days should it expire? Send <code>0</code> for never."
-        f"{_CANCEL_HINT}"
-    )
+    prompt, markup = await _prompt_expires(state)
+    await message.answer(prompt, reply_markup=markup)
 
 
 @router.message(GiftCreateForm.expires_days)
@@ -394,14 +436,8 @@ async def set_expires_days(message: Message, state: FSMContext) -> None:
     # (`_expires_at`), which also means the countdown starts when the code is created rather than
     # when the admin happened to answer this question.
     await state.update_data(expires_days=int(text))
-    await state.set_state(GiftCreateForm.description)
-    await message.answer(
-        f"{_step(await state.get_data(), 'description')}\n"
-        "Finally, write the description users will read on the claim screen — "
-        "say what they're getting and why.\n\n"
-        "Send <code>-</code> to leave it blank."
-        f"{_CANCEL_HINT}"
-    )
+    prompt, markup = await _prompt_description(state)
+    await message.answer(prompt, reply_markup=markup)
 
 
 @router.message(GiftCreateForm.description)
@@ -409,10 +445,41 @@ async def set_description(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     # "-" is the documented way to skip; storing it verbatim would show a stray dash to every user.
     await state.update_data(description=None if raw in ("", "-") else raw)
+    prompt, markup = await _prompt_review(state)
+    await message.answer(prompt, reply_markup=markup)
 
-    data = await state.get_data()
-    await state.set_state(GiftCreateForm.review)
-    await message.answer(await _review_text(data), reply_markup=_review_keyboard())
+
+# The default each button stands for, and the question it moves on to. Editing the message the
+# button sits on rather than sending a new one keeps the wizard to one screen at a time.
+_SKIPS = {
+    "pu": ("per_user_limit", 1, "Once per user.", _prompt_expires),
+    "ex": ("expires_days", 0, "Never expires.", _prompt_description),
+    "ds": ("description", None, "No description.", _prompt_review),
+}
+
+_SKIP_STATES = {
+    "pu": GiftCreateForm.per_user_limit,
+    "ex": GiftCreateForm.expires_days,
+    "ds": GiftCreateForm.description,
+}
+
+
+@router.callback_query(F.data.startswith("gskip:"), GiftCreateForm.per_user_limit)
+@router.callback_query(F.data.startswith("gskip:"), GiftCreateForm.expires_days)
+@router.callback_query(F.data.startswith("gskip:"), GiftCreateForm.description)
+async def take_default(query: CallbackQuery, state: FSMContext) -> None:
+    key = query.data.removeprefix("gskip:")
+    # Every step's prompt stays in the chat, so an earlier screen's button is still tappable. Without
+    # this it would answer a question already past and throw the wizard back two steps.
+    if await state.get_state() != _SKIP_STATES[key].state:
+        await query.answer("That step is already answered — use the newest message.", show_alert=True)
+        return
+
+    field, default, toast, next_prompt = _SKIPS[key]
+    await state.update_data(**{field: default})
+    prompt, markup = await next_prompt(state)
+    await query.message.edit_text(prompt, reply_markup=markup)
+    await query.answer(toast)
 
 
 def _review_keyboard() -> InlineKeyboardMarkup:

@@ -13,7 +13,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.bot.handlers.admin.gifts import _step, _wizard_grant, _wizard_max_uses
+from app.bot.handlers.admin.gifts import (
+    _SKIP_STATES,
+    _SKIPS,
+    _skip_keyboard,
+    _step,
+    _wizard_grant,
+    _wizard_max_uses,
+)
 from app.core.security import get_cipher
 from app.database.models.gift import GiftItemStatus, GiftStatus
 from app.database.repositories.gift_repo import GiftRepo
@@ -131,3 +138,30 @@ async def test_a_delivered_item_is_frozen(sqlite_sessionmaker):
             await update_item_payload(session, item_id, "REWRITTEN")
         with pytest.raises(ValueError):
             await delete_item(session, item_id)
+
+
+# ---- The last three questions answer themselves ----
+
+
+def test_every_default_button_belongs_to_the_step_it_answers() -> None:
+    """The prompts stay in the chat, so an earlier screen's button is still tappable. The handler
+    refuses one that does not match the current state — this pins the pairing it checks against."""
+    assert set(_SKIPS) == set(_SKIP_STATES)
+    assert _SKIP_STATES["pu"].state.endswith(":per_user_limit")
+    assert _SKIP_STATES["ex"].state.endswith(":expires_days")
+    assert _SKIP_STATES["ds"].state.endswith(":description")
+
+
+def test_the_defaults_are_the_answer_almost_every_code_wants() -> None:
+    fields = {key: (field, default) for key, (field, default, _, _) in _SKIPS.items()}
+    assert fields["pu"] == ("per_user_limit", 1)
+    assert fields["ex"] == ("expires_days", 0)  # 0 days is the wizard's "never"
+    assert fields["ds"] == ("description", None)
+
+
+def test_a_default_button_offers_an_abort_beside_it() -> None:
+    """A screen whose only button commits to something is a trap — /cancel is documented but a
+    button is what people reach for."""
+    rows = _skip_keyboard("pu", "1️⃣ Once per user").inline_keyboard
+    assert rows[0][0].callback_data == "gskip:pu"
+    assert len(rows) == 2, "the abort row is not optional"
