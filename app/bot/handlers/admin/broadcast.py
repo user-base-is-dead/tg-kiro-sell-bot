@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.database.models.catalog import ProductStatus
 from app.database.models.user import User
 from app.database.repositories.audit_repo import AuditRepo
+from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.services.broadcast_service import create_broadcast, run_worker
 
@@ -244,47 +245,119 @@ async def _refresh_control(query: CallbackQuery, state: FSMContext) -> None:
     )
 
 
+_LEGEND = (
+    "🛍️ = on sale, gets a <b>Buy Now</b> button\n"
+    "🔜 = not released yet, gets a <b>View product</b> button instead — there is nothing to buy "
+    "yet, and a dead Buy Now is worse than none."
+)
+
+
+def _product_button(product) -> list:
+    soon = product.status is ProductStatus.COMING_SOON
+    return [
+        btn(
+            f"{'🔜' if soon else '🛍️'} {product.name}",
+            f"broadcast_setprod:{product.id}",
+            NEUTRAL if soon else PRIMARY,
+        )
+    ]
+
+
+def _page_nav(target: str, page: int, pages: int) -> list:
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅️ Prev", f"{target}:{page - 1}", NEUTRAL))
+    if page < pages - 1:
+        nav.append(btn("Next ➡️", f"{target}:{page + 1}", NEUTRAL))
+    return nav
+
+
 @router.callback_query(F.data.startswith("broadcast_pickprod:"), BroadcastForm.confirm)
 async def pick_product(query: CallbackQuery, session: AsyncSession) -> None:
-    page = int(query.data.split(":", 1)[1])
-    # `list_active` and not the store listing: a COMING_SOON product is exactly the one an
-    # announcement is most likely to be about, and filtering by what is buyable today would hide it.
-    products = await ProductRepo(session).list_active(limit=200)
-    pages = max(1, (len(products) + _PRODUCTS_PER_PAGE - 1) // _PRODUCTS_PER_PAGE)
+    """The store's own shape: loose products out in the open, categories as folders below them.
+
+    Admins recognise their catalog by where things sit, so a flat alphabetical list of every
+    product made them read names to find one they could have pointed at. This mirrors what a
+    shopper sees, minus the "is it buyable today" filter — a COMING_SOON product is exactly the one
+    an announcement is most likely to be about.
+    """
+    _, _, page_raw = query.data.partition(":")
+    page = int(page_raw)
+    repo = ProductRepo(session)
+    loose = await repo.list_uncategorized(limit=200, active_only=True)
+    categories = await CategoryRepo(session).list_active()
+
+    pages = max(1, (len(loose) + _PRODUCTS_PER_PAGE - 1) // _PRODUCTS_PER_PAGE)
     page = max(0, min(page, pages - 1))
 
-    rows = []
-    for product in products[page * _PRODUCTS_PER_PAGE : (page + 1) * _PRODUCTS_PER_PAGE]:
-        soon = product.status is ProductStatus.COMING_SOON
-        rows.append(
-            [
-                btn(
-                    f"{'🔜' if soon else '🛍️'} {product.name}",
-                    f"broadcast_setprod:{product.id}",
-                    NEUTRAL if soon else PRIMARY,
-                )
-            ]
-        )
-
-    if pages > 1:
-        nav = []
-        if page > 0:
-            nav.append(btn("⬅️ Prev", f"broadcast_pickprod:{page - 1}", NEUTRAL))
-        if page < pages - 1:
-            nav.append(btn("Next ➡️", f"broadcast_pickprod:{page + 1}", NEUTRAL))
+    rows = [_product_button(p) for p in loose[page * _PRODUCTS_PER_PAGE : (page + 1) * _PRODUCTS_PER_PAGE]]
+    if nav := _page_nav("broadcast_pickprod", page, pages):
         rows.append(nav)
+    if loose and categories:
+        rows.append([btn("─────────────", "noop", NEUTRAL)])
+
+    # Two per row, same as the store — a folder carries no state worth a full-width button.
+    row = []
+    for category in categories:
+        count = await repo.count_by_category(category.id, active_only=True)
+        row.append(
+            btn(
+                f"{category.emoji or '📦'} {category.name} ({count})",
+                f"broadcast_pickcat:{category.id}:0",
+                PRIMARY,
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
     rows.append([btn("🔙 Back", "broadcast_prodback", DANGER)])
 
-    text = (
-        "🛒 <b>Attach a product</b>\n\n"
-        "Pick the product this post is about and its button goes under the message, so people can "
-        "act on it without hunting through the store.\n\n"
-        "🛍️ = on sale, gets a <b>Buy Now</b> button\n"
-        "🔜 = not released yet, gets a <b>View product</b> button instead — there is nothing to buy "
-        "yet, and a dead Buy Now is worse than none."
-    )
-    if not products:
+    if not loose and not categories:
         text = "🛒 <b>Attach a product</b>\n\nNo active products to attach yet."
+    else:
+        text = (
+            "🛒 <b>Attach a product</b>\n\n"
+            "Pick the product this post is about and its button goes under the message, so people "
+            "can act on it without hunting through the store.\n\n"
+            f"{_LEGEND}"
+        )
+        if categories:
+            text += "\n\nProducts outside every category are listed first; the rest are in folders."
+        if pages > 1:
+            text += f"\n\nLoose products — page {page + 1} of {pages}"
+
+    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("broadcast_pickcat:"), BroadcastForm.confirm)
+async def pick_product_in_category(query: CallbackQuery, session: AsyncSession) -> None:
+    _, category_id, page_raw = query.data.split(":", 2)
+    category = await CategoryRepo(session).get_by_id(int(category_id))
+    if category is None:
+        await query.answer("That category is gone.", show_alert=True)
+        return
+
+    repo = ProductRepo(session)
+    page = int(page_raw)
+    total = await repo.count_by_category(category.id, active_only=True)
+    pages = max(1, (total + _PRODUCTS_PER_PAGE - 1) // _PRODUCTS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    products = await repo.list_by_category(
+        category.id, active_only=True, offset=page * _PRODUCTS_PER_PAGE, limit=_PRODUCTS_PER_PAGE
+    )
+
+    rows = [_product_button(p) for p in products]
+    if nav := _page_nav(f"broadcast_pickcat:{category.id}", page, pages):
+        rows.append(nav)
+    rows.append([btn("🔙 Back to all products", "broadcast_pickprod:0", DANGER)])
+
+    text = (
+        f"{category.emoji or '📦'} <b>{category.name}</b>\n\n"
+        + (f"{total} product(s).\n\n{_LEGEND}" if total else "Nothing active in this category yet.")
+    )
     if pages > 1:
         text += f"\n\nPage {page + 1} of {pages}"
 
