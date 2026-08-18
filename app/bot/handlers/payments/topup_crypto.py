@@ -13,7 +13,11 @@ from app.database.models.user import User
 from app.database.models.crypto import CryptoPayment
 from app.locales.i18n import t
 from app.services import stock_hold_service
-from app.services.payments.blockchain_monitor import BlockchainMonitor
+from app.services.payments.blockchain_monitor import (
+    MATCH_TOLERANCE,
+    MIN_AMOUNT_GAP,
+    BlockchainMonitor,
+)
 from app.utils.time import as_utc
 
 router = Router(name="payments.topup_crypto")
@@ -64,8 +68,13 @@ async def _unique_total(session: AsyncSession, amount_usd: float, now: datetime)
     A transfer is matched to an invoice by amount and nothing else — the chain carries no order id.
     So two buyers topping up $15.00 at the same time used to be handed the identical total, and the
     checker refuses to guess between them: it logs "ambiguous" and skips the transfer, leaving both
-    buyers paid and neither credited. Nudging the fee up by a cent per collision makes each live
-    total unique, so every transfer resolves to exactly one invoice.
+    buyers paid and neither credited. Nudging the fee up per collision makes each live total
+    distinct, so every transfer resolves to exactly one invoice.
+
+    "Distinct" means further apart than the matching window, not merely unequal. A transfer counts
+    for an invoice if it lands within MATCH_TOLERANCE of it, so totals one cent apart would both
+    claim the same payment and put us straight back in the ambiguous case the spacing exists to
+    prevent. MIN_AMOUNT_GAP is that window doubled and then some.
 
     Only currently-matchable invoices reserve a total. A cancelled, confirmed or timed-out one is
     no longer a candidate, so its amount is free again and the fee never drifts upward over time.
@@ -76,10 +85,10 @@ async def _unique_total(session: AsyncSession, amount_usd: float, now: datetime)
             CryptoPayment.status == "PENDING", CryptoPayment.created_at >= cutoff
         )
     )
-    taken = {round(float(a), 2) for a in result.scalars()}
+    taken = [round(float(a), 2) for a in result.scalars()]
 
     total = round(amount_usd + SERVICE_FEE, 2)
-    while total in taken:
+    while any(round(abs(total - other), 2) < MIN_AMOUNT_GAP for other in taken):
         total = round(total + 0.01, 2)
     return total
 
@@ -152,7 +161,8 @@ async def render_payment_details(
         f"{'this order' if buying else 'your account'}.\n\n"
         f"⏱️ <b>Payment expires in:</b> {minutes} minutes\n\n"
         "✅ Payment will be auto-confirmed when received.\n"
-        "⚠️ Send exactly the total amount shown to ensure auto-confirmation."
+        f"🎯 If your wallet rounds it, anything within ±${MATCH_TOLERANCE:.2f} still confirms — "
+        "so a cent or two either way is nothing to worry about."
     )
 
     from app.bot.keyboards.styles import SUCCESS, btn

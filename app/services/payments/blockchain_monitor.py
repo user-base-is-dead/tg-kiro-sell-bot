@@ -8,7 +8,21 @@ from app.core.config import get_settings
 
 # USDT on BNB Smart Chain (BEP20) - 18 decimals
 USDT_BEP20_CONTRACT = "0x55d398326f99059fF775485246999027B3197955"
-MATCH_TOLERANCE = 0.004  # Sub-cent float tolerance
+# How far off the invoiced total a transfer may land and still count as payment for it.
+#
+# Wallets do not send what the buyer typed. Trust Wallet and friends round the USDT amount to their
+# own display precision, some deduct a spread on a swap-and-send, and a buyer paying $5.20 by hand
+# from a balance of $5.19 sends $5.19. Every one of those is somebody who paid and then sat looking
+# at an unconfirmed invoice. Two cents either way covers all of it and costs at most two cents.
+#
+# The price of a wide window is that neighbouring invoices can both look like a match, and the
+# checker will not guess between them — so `_unique_total` in topup_crypto.py must keep live
+# invoices further apart than this. Widen one and the other has to move with it.
+MATCH_TOLERANCE = 0.02
+
+# The smallest gap allowed between two live invoice totals: one cent wider than the window on both
+# sides, so no single transfer can ever sit inside two invoices' windows at once.
+MIN_AMOUNT_GAP = round(MATCH_TOLERANCE * 2 + 0.01, 2)
 
 # keccak256("Transfer(address,address,uint256)")
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -96,4 +110,12 @@ class BlockchainMonitor:
             raise RuntimeError(f"BSC RPC error: {e}") from e
 
     def matches_amount(self, transfer_amount: float, expected_amount: float) -> bool:
-        return abs(transfer_amount - expected_amount) <= self.tolerance
+        """Whether this transfer pays this invoice, judged in whole cents.
+
+        The comparison is rounded to cents before it is made because the naive float form quietly
+        excludes the exact edge: 5.20 - 5.18 comes out as 0.02000000000000046, which is larger than
+        a tolerance of 0.02, so the buyer who paid two cents light — the case this window exists
+        for — would be refused by a rounding artefact. Sub-cent dust on the transfer itself is
+        rounded away with it, which is the intent: nobody invoices fractions of a cent.
+        """
+        return round(abs(transfer_amount - expected_amount), 2) <= self.tolerance + 1e-9

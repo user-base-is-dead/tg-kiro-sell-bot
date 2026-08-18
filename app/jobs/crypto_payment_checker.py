@@ -15,6 +15,33 @@ from app.utils.time import as_utc
 logger = logging.getLogger(__name__)
 
 
+async def _identify_sender(session, from_address: str | None) -> int | None:
+    """The one user this address belongs to, or None if it does not identify anybody.
+
+    A transfer carries two identifying things: how much, and who sent it. The amount is the primary
+    match; this is the fallback for when the amount alone fits more than one live invoice.
+
+    "Belongs to" has to be strict. Most buyers pay from a personal wallet, and that address is as
+    good as a name. But a withdrawal straight from an exchange leaves from the exchange's shared hot
+    wallet, and thousands of unrelated people share it — treating that as identity would hand one
+    buyer's money to whoever paid from Binance last. So the address counts only while every payment
+    ever confirmed from it belongs to the same account; the moment a second account uses it, it goes
+    back to proving nothing, permanently and for everyone.
+    """
+    if not from_address:
+        return None
+    result = await session.execute(
+        select(CryptoPayment.user_id)
+        .where(
+            CryptoPayment.from_address == from_address.lower(),
+            CryptoPayment.status.in_(("CONFIRMED", "COMPLETED")),
+        )
+        .distinct()
+    )
+    owners = result.scalars().all()
+    return owners[0] if len(owners) == 1 else None
+
+
 async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
     """Background job to check blockchain for pending payments."""
     monitor = BlockchainMonitor()
@@ -67,14 +94,29 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                 continue
 
             if len(matches) > 1:
-                # Ambiguous - log and skip
-                logger.error(
-                    "Ambiguous payment tx %s (%.4f USDT) matched %d payments — skipping auto-credit.",
+                # Two live invoices fit this transfer. Before giving up, ask who sent it: a buyer
+                # who has paid from this wallet before, and whose wallet has never paid for anyone
+                # else, is identified as surely as the amount would have identified them.
+                sender_id = await _identify_sender(session, tx.get("from"))
+                owned = [m for m in matches if m[1].user_id == sender_id] if sender_id else []
+                if len(owned) != 1:
+                    # Still ambiguous. Crediting the wrong buyer is worse than crediting nobody —
+                    # this way both invoices stay open and an admin can settle it by hand, rather
+                    # than one stranger getting the other's money and the loser having no recourse.
+                    logger.error(
+                        "Ambiguous payment tx %s (%.4f USDT) matched %d payments — skipping auto-credit.",
+                        tx["hash"],
+                        tx["value"],
+                        len(matches),
+                    )
+                    continue
+                matches = owned
+                logger.info(
+                    "Ambiguous tx %s resolved to user %d by sender address %s.",
                     tx["hash"],
-                    tx["value"],
-                    len(matches),
+                    sender_id,
+                    tx.get("from"),
                 )
-                continue
 
             payment_id, payment = matches[0]
 
@@ -95,6 +137,11 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                 payment.status = "CONFIRMED"
                 payment.actual_amount = str(tx["value"])
                 payment.tx_hash = tx["hash"]
+                # Lower-cased on the way in so the tiebreaker can compare addresses directly —
+                # nodes are inconsistent about checksum casing and 0xAB… must not read as a
+                # different wallet from 0xab….
+                if tx.get("from"):
+                    payment.from_address = tx["from"].lower()
                 await session.flush()
 
                 logger.info(

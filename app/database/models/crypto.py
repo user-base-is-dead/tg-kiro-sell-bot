@@ -26,6 +26,10 @@ class CryptoPayment(BigIntPKMixin, TimestampMixin, Base):
     )  # PENDING, CONFIRMED, MISMATCH, COMPLETED
     description: Mapped[str | None] = mapped_column(String(512))
     tx_hash: Mapped[str | None] = mapped_column(String(256), index=True)  # Blockchain tx
+    # The address the confirmed transfer came from. Recorded so a returning buyer's wallet can break
+    # a tie when two invoices are for the same amount — see `crypto_payment_checker._identify_sender`
+    # for why it is only ever a tiebreaker and never proof on its own.
+    from_address: Mapped[str | None] = mapped_column(String(64), index=True)
     wallet_transaction_id: Mapped[int | None] = mapped_column(
         BigInteger
     )  # Reference to wallet transaction
