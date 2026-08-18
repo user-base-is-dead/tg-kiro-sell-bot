@@ -19,16 +19,25 @@ from app.utils.errors import UserError
 IDEMPOTENCY_WINDOW_SECONDS = 15
 
 
-def checkout_idempotency_key(user_id: int, product_id: int) -> str:
+def checkout_idempotency_key(user_id: int, product_id: int, qty: int = 1) -> str:
+    # The quantity is part of the key: it is a different purchase. Without it, a buyer who bought
+    # one and immediately came back for three inside the same 15-second window was handed the
+    # first order back and charged for one — the second purchase silently never happened.
     bucket = int(time.time() // IDEMPOTENCY_WINDOW_SECONDS)
-    return f"buy:{user_id}:{product_id}:{bucket}"
+    return f"buy:{user_id}:{product_id}:{qty}:{bucket}"
 
 
 @dataclass(frozen=True)
 class PlacedOrder:
     order: Order
     order_item: OrderItem
-    delivered_payload: str | None  # plaintext, only for AUTO — shown once, never re-fetchable
+    # Plaintext, only for AUTO — shown once, never re-fetchable. One entry per unit bought.
+    delivered_payloads: tuple[str, ...] = ()
+
+    @property
+    def delivered_payload(self) -> str | None:
+        """The single-unit view, for the screens and callers that only ever deal in one."""
+        return self.delivered_payloads[0] if self.delivered_payloads else None
 
 
 async def _claim_stock(
@@ -66,16 +75,69 @@ async def _claim_stock(
     return stock_item
 
 
-def _deliver_auto(session: AsyncSession, order: Order, order_item: OrderItem, stock_item, now: datetime) -> str:
-    """Hand over a reserved stock item and close the order. Returns the plaintext payload, which is
-    shown to the user once and never persisted a second time — the ciphertext on the stock item
+async def _claim_stock_many(
+    session: AsyncSession,
+    order_repo: OrderRepo,
+    product: Product,
+    order_item: OrderItem,
+    qty: int,
+    *,
+    user_id: int,
+) -> list:
+    """Reserve `qty` credentials, or as many as can be had. Never partially charges anyone.
+
+    The buyer's own holds are taken first and in full — they were promised *those* logins on the
+    payment screen — and only then does it reach for whatever else is free. A short list is
+    returned rather than raised on, because whether that ends the sale depends on the product: with
+    a hand-set count the admin has promised units the pool does not contain, and those are fulfilled
+    by hand instead of refused.
+    """
+    claimed: list = []
+
+    for held in await stock_hold_service.get_holds(session, product.id, user_id):
+        if len(claimed) >= qty:
+            break
+        if await stock_hold_service.claim_held(session, held.id, user_id):
+            held.order_item_id = order_item.id
+            claimed.append(held)
+
+    if len(claimed) < qty:
+        for stock_item in await order_repo.claim_available_stock(product.id, qty - len(claimed)):
+            stock_item.status = StockStatus.RESERVED
+            stock_item.order_item_id = order_item.id
+            claimed.append(stock_item)
+
+    await session.flush()
+    return claimed
+
+
+def _unclaim(session: AsyncSession, stock_items: list) -> None:
+    """Put reserved credentials back on the shelf.
+
+    Used when the pool could not cover the whole order and the sale falls back to hand fulfilment:
+    holding half an order's worth of logins that will never be delivered would take them from
+    buyers who can actually be served from the pool.
+    """
+    for stock_item in stock_items:
+        stock_item.status = StockStatus.AVAILABLE
+        stock_item.order_item_id = None
+
+
+def _deliver_auto(
+    session: AsyncSession, order: Order, order_item: OrderItem, stock_items: list, now: datetime
+) -> list[str]:
+    """Hand over the reserved stock items and close the order. Returns the plaintext payloads, which
+    are shown to the user once and never persisted a second time — the ciphertext on the stock items
     stays the only stored copy."""
-    stock_item.status = StockStatus.DELIVERED
-    payload = get_cipher().decrypt(stock_item.payload)
+    cipher = get_cipher()
+    payloads = []
+    for stock_item in stock_items:
+        stock_item.status = StockStatus.DELIVERED
+        payloads.append(cipher.decrypt(stock_item.payload))
     session.add(Delivery(order_item_id=order_item.id, mode="AUTO", payload=None, delivered_at=now))
     order.status = OrderStatus.COMPLETED
     order.completed_at = now
-    return payload
+    return payloads
 
 
 def _start_warranty(session: AsyncSession, product: Product, order_item: OrderItem, user_id: int, now: datetime) -> None:
@@ -99,36 +161,48 @@ def _start_warranty(session: AsyncSession, product: Product, order_item: OrderIt
         )
 
 
-async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -> PlacedOrder:
+async def place_order(
+    session: AsyncSession, *, user_id: int, product_id: int, qty: int = 1
+) -> PlacedOrder:
     """The whole purchase in one DB transaction: claim stock -> debit wallet -> deliver.
     Any failure (out of stock, insufficient balance) rolls the entire thing back — nothing
-    is ever half-applied."""
+    is ever half-applied.
+
+    `qty` is checked against the shelf here and not only in the screen that asked for it. The
+    number was typed minutes earlier and other buyers have been shopping since; the transaction is
+    the only place that can promise it still holds.
+    """
+    qty = int(qty)
+    if qty < 1:
+        raise UserError("errors.invalid_quantity")
+
     product_repo = ProductRepo(session)
     product: Product | None = await product_repo.get_by_id(product_id)
     if product is None or not product.is_active or product.status.value in ("COMING_SOON", "DISABLED"):
         raise UserError("errors.product_unavailable")
 
-    # A hand-set count of zero closes the product to buyers even while credentials sit on the
-    # shelf. It has to be checked here rather than left to _claim_stock, which would happily hand
-    # one of those credentials over.
-    if product.manual_stock is not None and product.manual_stock <= 0:
+    # A hand-set count closes the product to buyers even while credentials sit on the shelf, and
+    # caps how many of them can go in one order. It has to be checked here rather than left to the
+    # claim, which would happily hand those credentials over.
+    if product.manual_stock is not None and product.manual_stock < qty:
         raise UserError("errors.out_of_stock")
 
-    idempotency_key = checkout_idempotency_key(user_id, product_id)
+    idempotency_key = checkout_idempotency_key(user_id, product_id, qty)
     order_repo = OrderRepo(session)
     existing = await order_repo.get_by_idempotency_key(idempotency_key)
     if existing is not None:
         existing_full = await order_repo.get_by_id(existing.id)
-        return PlacedOrder(order=existing_full, order_item=existing_full.items[0], delivered_payload=None)
+        return PlacedOrder(order=existing_full, order_item=existing_full.items[0])
 
+    total_minor = product.price_minor * qty
     now = datetime.now(UTC)
     order = Order(
         order_number=new_order_number(),
         user_id=user_id,
         status=OrderStatus.PENDING,
-        subtotal_minor=product.price_minor,
+        subtotal_minor=total_minor,
         discount_minor=0,
-        total_minor=product.price_minor,
+        total_minor=total_minor,
         currency=product.currency,
         idempotency_key=idempotency_key,
         placed_at=now,
@@ -141,32 +215,35 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
         product_id=product.id,
         product_name=product.name,
         unit_price_minor=product.price_minor,
-        qty=1,
+        qty=qty,
         warranty_days=product.warranty_days,
     )
     session.add(order_item)
     await session.flush()
 
-    delivered_payload: str | None = None
+    delivered_payloads: list[str] = []
 
     # Stock first, then payment, then delivery: an empty shelf must not cost the buyer money, and a
     # failed debit must not hand over the goods.
-    stock_item = None
+    stock_items: list = []
     if product.fulfillment_mode == FulfillmentMode.AUTO:
-        try:
-            stock_item = await _claim_stock(session, order_repo, product, order_item, user_id=user_id)
-        except UserError:
-            # No credential free. That is only the end of the sale when the credential pool is what
-            # defines availability — under a hand-set count the admin has promised units beyond the
-            # pool, so this one is sold and fulfilled by hand instead. The guard above already
-            # rejected the case where the override itself has run out.
+        stock_items = await _claim_stock_many(session, order_repo, product, order_item, qty, user_id=user_id)
+        if len(stock_items) < qty:
+            # The pool cannot cover the whole order. That is only the end of the sale when the pool
+            # is what defines availability — under a hand-set count the admin has promised units
+            # beyond it, so the order is sold and fulfilled by hand instead. It goes by hand in
+            # *full*: splitting it would deliver half now and leave the buyer wondering whether the
+            # rest is coming, and the credentials are worth more back on the shelf.
             if product.manual_stock is None:
-                raise
+                raise UserError("errors.out_of_stock")
+            _unclaim(session, stock_items)
+            stock_items = []
+            await session.flush()
 
     debit_txn = await wallet_service.debit(
         session,
         user_id=user_id,
-        amount_minor=product.price_minor,
+        amount_minor=total_minor,
         currency=product.currency,
         type_=TxnType.PURCHASE,
         idempotency_key=idempotency_key,
@@ -175,16 +252,16 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
     )
     order.payment_txn_id = debit_txn.id
 
-    if stock_item is not None:
-        delivered_payload = _deliver_auto(session, order, order_item, stock_item, now)
+    if stock_items:
+        delivered_payloads = _deliver_auto(session, order, order_item, stock_items, now)
     else:
         order.status = OrderStatus.PROCESSING
 
     # The override is a counter, not a label: whatever the sale cost the credential pool, it also
-    # costs one unit of the number the admin typed, or the storefront would keep advertising a
-    # count that no longer exists.
+    # costs the number the admin typed, or the storefront would keep advertising a count that no
+    # longer exists.
     if product.manual_stock is not None:
-        product.manual_stock = max(0, product.manual_stock - 1)
+        product.manual_stock = max(0, product.manual_stock - qty)
 
     _start_warranty(session, product, order_item, user_id, now)
 
@@ -195,7 +272,7 @@ async def place_order(session: AsyncSession, *, user_id: int, product_id: int) -
         if buyer is not None:
             await referral_service.try_qualify_referral(session, user_id=user_id, referred_by_id=buyer.referred_by_id)
 
-    return PlacedOrder(order=order, order_item=order_item, delivered_payload=delivered_payload)
+    return PlacedOrder(order=order, order_item=order_item, delivered_payloads=tuple(delivered_payloads))
 
 
 async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order) -> bool:

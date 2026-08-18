@@ -47,7 +47,8 @@
     "insufficient_balance": "💳 Insufficient balance. Top up your wallet and try again.",
     "out_of_stock": "🔴 Sorry, this item just went out of stock.",
     "product_unavailable": "This product is no longer available.",
-    "max_per_user_reached": "You've reached the purchase limit for this product."
+    "max_per_user_reached": "You've reached the purchase limit for this product.",
+    "invalid_quantity": "Choose how many you want — a whole number, at least 1."
   },
   "gift": {
     "prompt": "🎁 <b>Free Gift</b>\n\nHave a gift code? Send it here and its value will be added to your wallet instantly.\n\n✏️ Type your code below:",

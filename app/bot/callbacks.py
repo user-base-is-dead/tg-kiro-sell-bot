@@ -48,6 +48,10 @@ class OrderCB(CallbackData, prefix="ord"):
     product_id: str = ""
     order_id: str = ""
     page: int = 1
+    # How many units the buyer asked for. Carried through every checkout screen rather than left in
+    # FSM state: the buyer can leave the payment screen open, wander off and come back, and a
+    # button that has forgotten the number would quietly charge them for one.
+    qty: int = 1
 
 
 class AdminOrderCB(CallbackData, prefix="aord"):

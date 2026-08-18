@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import CategoryCB, ProductCB
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.products import category_grid, product_detail, product_list
+from app.bot.states.checkout_form import CheckoutForm
 from app.database.models.catalog import ProductStatus
 from app.database.models.user import User
 from app.database.repositories.category_repo import CategoryRepo
@@ -128,21 +130,31 @@ async def on_category(query: CallbackQuery, callback_data: CategoryCB, session: 
 
 
 @router.callback_query(ProductCB.filter())
-async def on_product(query: CallbackQuery, callback_data: ProductCB, session: AsyncSession, user: User) -> None:
+async def on_product(
+    query: CallbackQuery, callback_data: ProductCB, state: FSMContext, session: AsyncSession, user: User
+) -> None:
     if not query.message:
         return
 
     if callback_data.action == "buy":
-        from app.bot.handlers.orders.checkout import render_payment_choice
+        from app.bot.handlers.orders.checkout import render_quantity_prompt
 
-        rendered = await render_payment_choice(session, int(callback_data.id), user)
+        # Buy Now asks how many before it asks how to pay. The product and its cap go into state
+        # because the answer arrives as a plain message, which carries nothing else to identify it.
+        rendered = await render_quantity_prompt(session, int(callback_data.id), user)
         if rendered is None:
             await query.answer(t("common.unknown_action", user.locale), show_alert=True)
             return
-        text, markup = rendered
+        text, markup, cap = rendered
+        await state.set_state(CheckoutForm.quantity)
+        await state.update_data(product_id=int(callback_data.id), max_qty=cap)
         await query.message.edit_text(text, reply_markup=markup)
         await query.answer()
         return
+
+    # Leaving a product page abandons any half-answered quantity question, so the next plain
+    # message is a support ticket again rather than a number nobody asked for.
+    await state.clear()
 
     # `user_id` is what lets the page tell "your payment window" apart from "someone else has the
     # last one" — without it every shopper saw the anonymous version.

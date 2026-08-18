@@ -58,6 +58,11 @@ async def hold_one(session: AsyncSession, product_id: int, user_id: int) -> Stoc
         await session.flush()
         return existing
 
+    return await _take_one(session, product_id, user_id)
+
+
+async def _take_one(session: AsyncSession, product_id: int, user_id: int) -> StockItem | None:
+    """Take one more free credential for this buyer, ignoring what they already hold."""
     # Candidates are re-read each pass: a row lost to another buyer must not be retried, and one
     # freed by an expiring hold in the meantime should be picked up.
     while True:
@@ -87,6 +92,55 @@ async def hold_one(session: AsyncSession, product_id: int, user_id: int) -> Stoc
             await session.flush()
             return await session.get(StockItem, candidate)
         # Somebody else took it between the SELECT and the UPDATE. Try the next one.
+
+
+async def hold_many(session: AsyncSession, product_id: int, user_id: int, qty: int) -> int:
+    """Hold exactly `qty` credentials for this buyer. Returns how many they actually ended up with.
+
+    Re-entrant in both directions, because the buyer can come back to the payment screen after
+    changing their mind about the number: holds they already have are refreshed, surplus ones go
+    straight back on the shelf rather than sitting out five minutes nobody asked for, and the
+    shortfall is taken one conditional UPDATE at a time — so two buyers racing for the last three
+    credentials split them instead of both being promised all three.
+
+    A short return is not an error here. The caller decides what to do about it, because "two of
+    the three you wanted" is a different conversation on the payment screen than mid-purchase.
+    """
+    now = datetime.now(UTC)
+    existing = await get_holds(session, product_id, user_id)
+
+    for item in existing[:qty]:
+        item.held_at = now
+        item.held_until = now + timedelta(minutes=HOLD_MINUTES)
+    for surplus in existing[qty:]:
+        surplus.status = StockStatus.AVAILABLE
+        surplus.held_by_user_id = None
+        surplus.held_at = None
+        surplus.held_until = None
+    await session.flush()
+
+    held = min(len(existing), qty)
+    while held < qty:
+        if await _take_one(session, product_id, user_id) is None:
+            break
+        held += 1
+    return held
+
+
+async def get_holds(session: AsyncSession, product_id: int, user_id: int) -> list[StockItem]:
+    """Every credential this buyer is holding for the product, oldest first."""
+    now = datetime.now(UTC)
+    result = await session.execute(
+        select(StockItem)
+        .where(
+            StockItem.product_id == product_id,
+            StockItem.held_by_user_id == user_id,
+            StockItem.status == StockStatus.HELD,
+            StockItem.held_until > now,
+        )
+        .order_by(StockItem.id)
+    )
+    return list(result.scalars().all())
 
 
 async def release(session: AsyncSession, product_id: int, user_id: int) -> int:
