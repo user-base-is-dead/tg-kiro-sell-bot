@@ -213,11 +213,23 @@ def _button_label(product: dict) -> str:
     return "👀 View product" if product["coming_soon"] else "🛒 Buy Now"
 
 
+def _attached_label(product: dict) -> str:
+    """The whole name. It was cut at 20 characters, which is inside the part that tells two
+    products apart — "Kiro Pro Max" and "Kiro Pro Plus" both came out as "Kiro Pro"-something, on
+    the one screen whose job is confirming which product is about to go out to every user.
+
+    The 64-character ceiling is Telegram's own limit on button text; past it the send fails and the
+    admin gets no screen at all, so a name that long is trimmed rather than lost.
+    """
+    label = f"🛒 Product: {product['name']}"
+    return label if len(label) <= 64 else f"{label[:63]}…"
+
+
 def _control_keyboard(product: dict | None) -> InlineKeyboardMarkup:
     rows = [
         [
             btn(
-                f"🛒 Product: {product['name'][:20]}" if product else "🛒 Attach product",
+                _attached_label(product) if product else "🛒 Attach product",
                 "broadcast_pickprod:0",
                 PRIMARY,
             )

@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import json
 
-from app.bot.handlers.admin.broadcast import _button_label, _buttons_json, _control_text
+from app.bot.handlers.admin.broadcast import (
+    _attached_label,
+    _button_label,
+    _buttons_json,
+    _control_text,
+)
 
 _ON_SALE = {"id": 7, "name": "Netflix 1 Month", "coming_soon": False}
 _COMING_SOON = {"id": 9, "name": "Spotify Family", "coming_soon": True}
@@ -46,3 +51,24 @@ def test_the_labels_match_what_the_confirm_screen_promises() -> None:
 
 def test_the_confirm_screen_says_nothing_about_products_when_none_is_attached() -> None:
     assert "Attached" not in _control_text(2, None)
+
+
+# ---- The attached-product button names the product in full ----
+
+
+def test_the_attached_button_shows_the_whole_name() -> None:
+    """It was cut at 20 characters — inside the part that tells two products apart. "Kiro Pro Max"
+    and "Kiro Pro Plus" both came out as "Kiro Pro"-something, on the one screen whose job is
+    confirming which product is about to go out to every user."""
+    long_name = {"id": 3, "name": "Chatgpt plus 1months (apple pay)", "coming_soon": False}
+
+    assert _attached_label(long_name) == "🛒 Product: Chatgpt plus 1months (apple pay)"
+
+
+def test_a_name_past_telegram_s_button_limit_is_trimmed_not_lost() -> None:
+    """64 characters is Telegram's own ceiling on button text. Past it the send fails and the admin
+    gets no screen at all, which is worse than an ellipsis."""
+    label = _attached_label({"id": 4, "name": "N" * 200, "coming_soon": False})
+
+    assert len(label) == 64
+    assert label.endswith("…")
