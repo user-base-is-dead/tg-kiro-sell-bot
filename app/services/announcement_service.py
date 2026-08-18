@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # which kind it is from the first line alone, without reading the product name.
 _NEW = "new"
 _RESTOCK = "restock"
+_MORE = "more"
 _SOLD_OUT = "sold_out"
 
 
@@ -59,6 +60,21 @@ def build_announcement(kind: str, product: Product, available: int) -> str:
             f"{warranty}"
             f"{_stock_line(product, available)}"
             "\nIt sold out once already — open /products before it does again."
+        )
+
+    if kind == _MORE:
+        # Distinct from BACK IN STOCK on purpose. Topping up a shelf that never emptied is a
+        # different event, and sending "it's available again" about something that was available
+        # all along teaches shoppers that these messages are not to be trusted.
+        return (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "📦 <b>MORE STOCK ADDED</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"🛍️ <b>{product.name}</b> — more units just landed.\n\n"
+            f"💰 Price: {_price(product)}\n"
+            f"{warranty}"
+            f"{_stock_line(product, available)}"
+            "\nOpen /products to pick one up."
         )
 
     return (
@@ -109,6 +125,20 @@ async def announce_new_product(bot: Bot, session: AsyncSession, product: Product
 
 async def announce_restock(bot: Bot, session: AsyncSession, product: Product, admin_id: int) -> int:
     return await send_announcement(bot, session, kind=_RESTOCK, product=product, admin_id=admin_id)
+
+
+async def announce_more_stock(bot: Bot, session: AsyncSession, product: Product, admin_id: int) -> int:
+    return await send_announcement(bot, session, kind=_MORE, product=product, admin_id=admin_id)
+
+
+async def announce_sold_out(bot: Bot, session: AsyncSession, product: Product, admin_id: int) -> int:
+    """A sell-out the admin caused and approved, as opposed to one a buyer caused.
+
+    `maybe_announce_sold_out` exists for the second case and guards itself heavily, because nobody
+    is there to judge whether the message should go. Here the admin typed the zero and pressed
+    Announce, so there is nothing left to second-guess.
+    """
+    return await send_announcement(bot, session, kind=_SOLD_OUT, product=product, admin_id=admin_id)
 
 
 async def maybe_announce_sold_out(bot: Bot, session: AsyncSession, product_id: int) -> bool:

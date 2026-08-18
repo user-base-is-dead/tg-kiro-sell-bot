@@ -37,7 +37,12 @@ from app.database.models.catalog import (
 )
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
-from app.services.announcement_service import announce_new_product, announce_restock
+from app.services.announcement_service import (
+    announce_more_stock,
+    announce_new_product,
+    announce_restock,
+    announce_sold_out,
+)
 from app.services.catalog_service import (
     add_stock,
     compute_display_status,
@@ -1135,22 +1140,34 @@ async def receive_stock(message: Message, state: FSMContext, session: AsyncSessi
 
 # ---- Announcements ----
 #
-# Two of the three announcement kinds are opt-in, and both ask here. The third — a sell-out — never
-# reaches this screen: it fires by itself from the checkout path (announcement_service
-# .maybe_announce_sold_out), because the admin isn't present when a buyer takes the last item.
+# Every announcement an admin causes is offered here and never sent on its own. The one exception
+# is a sell-out caused by a *buyer* taking the last item: nobody is at the keyboard to approve that
+# one, so it fires by itself from the checkout path (announcement_service.maybe_announce_sold_out).
 
 _ANNOUNCE_HEADLINE = {
     "new": "🆕 Announce this as a <b>new product</b>?",
     "restock": "🔄 Announce this as <b>back in stock</b>?",
+    "more": "📦 Announce that <b>more stock</b> was added?",
+    "sold_out": "🔴 Announce this as <b>sold out</b>?",
 }
+
+_ANNOUNCE_FOOTER = {
+    "sold_out": (
+        "Announce tells <b>every user</b> it is gone, and promises them a BACK IN STOCK message "
+        "when it returns. Decline changes nothing — the product is out of stock either way, just "
+        "quietly."
+    )
+}
+_ANNOUNCE_FOOTER_DEFAULT = (
+    "Announce sends it to <b>every user</b> as a broadcast. Decline changes nothing — the product "
+    "stays exactly as it is, just unannounced."
+)
 
 
 def _announce_prompt(kind: str, product_id: int, name: str) -> tuple[str, InlineKeyboardMarkup]:
     return (
         f"{_ANNOUNCE_HEADLINE[kind]}\n\n"
-        f"<b>{name}</b>\n\n"
-        "Announce sends it to <b>every user</b> as a broadcast. Decline changes nothing — the "
-        "product stays exactly as it is, just unannounced.",
+        f"<b>{name}</b>\n\n" + _ANNOUNCE_FOOTER.get(kind, _ANNOUNCE_FOOTER_DEFAULT),
         InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -1162,6 +1179,36 @@ def _announce_prompt(kind: str, product_id: int, name: str) -> tuple[str, Inline
     )
 
 
+async def _stock_change_prompt(
+    session: AsyncSession, product, before_available: int
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """The announcement a hand-edited stock count has earned, if any.
+
+    Retyping this number is the same event as loading credentials — the shelf changed — and it was
+    the only way of changing it that told nobody. An admin who set 0 to close a product got no
+    sold-out message out, and one who set 20 got no restock message, both silently.
+
+    Which message it earns depends on where the count came from, not just where it went. Coming
+    back from an empty shelf is BACK IN STOCK; adding to a shelf that already had items is MORE
+    STOCK. Sending the first when the second happened would tell shoppers a product had sold out
+    when it never did.
+    """
+    if not product.is_active:
+        return None
+    view = await compute_display_status(session, product)
+    if view.display_status in (ProductStatus.COMING_SOON, ProductStatus.DISABLED):
+        return None
+    after = view.available_stock
+
+    if after > before_available:
+        kind = "restock" if before_available == 0 else "more"
+    elif after == 0 and before_available > 0:
+        kind = "sold_out"
+    else:
+        return None
+    return _announce_prompt(kind, product.id, product.name)
+
+
 @router.callback_query(F.data.startswith("pann:"))
 async def send_product_announcement(query: CallbackQuery, session: AsyncSession, user) -> None:
     _, kind, raw_id = query.data.split(":", 2)
@@ -1170,9 +1217,17 @@ async def send_product_announcement(query: CallbackQuery, session: AsyncSession,
         await query.answer("That product is gone.", show_alert=True)
         return
 
-    targets = await (
-        announce_new_product if kind == "new" else announce_restock
-    )(query.message.bot, session, product, user.telegram_id)
+    sender = {
+        "new": announce_new_product,
+        "restock": announce_restock,
+        "more": announce_more_stock,
+        "sold_out": announce_sold_out,
+    }.get(kind)
+    if sender is None:
+        await query.answer("That announcement is no longer available.", show_alert=True)
+        return
+
+    targets = await sender(query.message.bot, session, product, user.telegram_id)
 
     await query.message.edit_text(
         f"📢 Announcing <b>{product.name}</b> to {targets} user(s)…",
@@ -1458,6 +1513,10 @@ async def apply_edit_button(query: CallbackQuery, session: AsyncSession) -> None
         await query.answer("Product not found.", show_alert=True)
         return
 
+    # Both `md` and `st` can move the shelf, so the before-count is taken for every field rather
+    # than guessed at per branch; nothing is offered unless the number actually moved.
+    before_available = (await compute_display_status(session, product)).available_stock
+
     if code == "md":
         product.fulfillment_mode = FulfillmentMode.AUTO if value == "auto" else FulfillmentMode.MANUAL
         if value == "auto":
@@ -1480,6 +1539,11 @@ async def apply_edit_button(query: CallbackQuery, session: AsyncSession) -> None
     text, markup = rendered
     await query.message.edit_text(f"✅ {_EDIT_FIELDS[code]} updated.\n\n{text}", reply_markup=markup)
     await query.answer("Saved.")
+
+    if code in ("st", "md") and (
+        prompt := await _stock_change_prompt(session, product, before_available)
+    ):
+        await query.message.answer(prompt[0], reply_markup=prompt[1])
 
 @router.message(Command("cancel"), ProductEditForm.value)
 async def cancel_edit(message: Message, state: FSMContext) -> None:
@@ -1527,6 +1591,9 @@ async def apply_edit_typed(message: Message, state: FSMContext, session: AsyncSe
                 "Send a whole number 0 or greater — or press ⏭️ Auto to count credentials instead."
             )
             return
+        # Read the shelf before the new number lands: what buyers hear about is the *change*, and
+        # afterwards there is nothing left to compare against.
+        before_available = (await compute_display_status(session, product)).available_stock
         product.manual_stock = count
 
     await _resync_status(session, product)
@@ -1535,3 +1602,8 @@ async def apply_edit_typed(message: Message, state: FSMContext, session: AsyncSe
 
     detail, markup = await _render_detail(session, product.id)
     await message.answer(f"✅ {_EDIT_FIELDS[code]} updated.\n\n{detail}", reply_markup=markup)
+
+    if code == "st" and (
+        prompt := await _stock_change_prompt(session, product, before_available)
+    ):
+        await message.answer(prompt[0], reply_markup=prompt[1])
