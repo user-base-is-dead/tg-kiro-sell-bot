@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.support import SupportTicket, TicketMessage, TicketStatus
@@ -23,7 +23,42 @@ class SupportRepo:
 
     async def get_by_topic_id(self, topic_id: int) -> SupportTicket | None:
         result = await self._session.execute(select(SupportTicket).where(SupportTicket.topic_id == topic_id))
-        return result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def get_by_topic_in_group(self, topic_id: int, group_chat_id: int, *, is_support_group: bool) -> SupportTicket | None:
+        """The ticket a forum topic belongs to, resolved within one chat.
+
+        Two groups now host ticket topics (SUPPORT_GROUP_ID and, for order disputes, ORDERS_GROUP_ID)
+        and Telegram numbers topics per chat — so topic 42 exists in both, meaning two different
+        conversations. Matching on `topic_id` alone would relay a staff reply into the wrong buyer's
+        chat the first time those numbers collide.
+
+        `is_support_group` covers the rows that predate `group_chat_id`: NULL has always meant the
+        support group, and back-filling it would only guess at the id the env held at the time.
+        Newest first, because a topic can legitimately be reused after its ticket closes.
+        """
+        where = SupportTicket.group_chat_id == group_chat_id
+        if is_support_group:
+            where = or_(where, SupportTicket.group_chat_id.is_(None))
+        result = await self._session.execute(
+            select(SupportTicket)
+            .where(SupportTicket.topic_id == topic_id, where)
+            .order_by(SupportTicket.opened_at.desc())
+        )
+        return result.scalars().first()
+
+    async def get_open_order_dispute(self, user_id: int) -> SupportTicket | None:
+        """The live order dispute holding this user, if any — what blocks Create Ticket and Warranty."""
+        result = await self._session.execute(
+            select(SupportTicket)
+            .where(
+                SupportTicket.user_id == user_id,
+                SupportTicket.order_id.is_not(None),
+                SupportTicket.status.in_([TicketStatus.OPEN, TicketStatus.PENDING]),
+            )
+            .order_by(SupportTicket.opened_at.desc())
+        )
+        return result.scalars().first()
 
     async def list_for_user(self, user_id: int, limit: int = 12, offset: int = 0) -> list[SupportTicket]:
         result = await self._session.execute(

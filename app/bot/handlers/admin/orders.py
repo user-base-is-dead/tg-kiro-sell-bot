@@ -528,13 +528,17 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
                 ticket=thread.ticket,
                 tx_hash=tx_hash,
             ),
+            # The thread is live and this DM is the way into it, so the input box says so.
+            invite_reply=thread.ticket is not None,
         )
     else:
         notified = False
         self_decline = False
 
     # Reopen rather than sync: a delivered order's topic is closed, and a decline after delivery has
-    # to land in the same thread instead of silently going nowhere.
+    # to land in the same thread instead of silently going nowhere. `open_or_reuse_thread` above has
+    # usually already done this on its way to hosting the dispute — this covers the case where it
+    # posted into an existing support ticket instead and the order's own log still needs catching up.
     await order_thread_service.reopen(message.bot, session, order)
 
     await message.answer(
@@ -597,12 +601,19 @@ def _receipt(order, declined, thread, buyer, *, notified: bool, self_decline: bo
         lines.append(f"🔖 Refund ID: <code>{declined.refund_event.event_number}</code>")
 
     if thread is not None and thread.ticket is not None:
-        opened = "opened" if thread.created else "added to their existing chat"
-        lines += ["", f"🎫 Ticket <code>{thread.ticket.ticket_number}</code> — {opened}."]
+        if thread.ticket.order_id:
+            lines += [
+                "",
+                f"🎫 Ticket <code>{thread.ticket.ticket_number}</code> — the buyer is connected to "
+                "this order's own thread, which stays open until you run <code>/close</code> in it.",
+            ]
+        else:
+            opened = "opened" if thread.created else "added to their existing chat"
+            lines += ["", f"🎫 Ticket <code>{thread.ticket.ticket_number}</code> — {opened}."]
         if not thread.reached_staff:
             lines.append(
-                "⚠️ The support group couldn't be reached, so nobody was pinged. The ticket exists — "
-                "check SUPPORT_GROUP_ID."
+                "⚠️ The group couldn't be reached, so nobody was pinged. The ticket exists — "
+                "check ORDERS_GROUP_ID / SUPPORT_GROUP_ID."
             )
     if self_decline:
         lines.append("ℹ️ This was your own order, so no separate buyer DM was sent — this is it.")

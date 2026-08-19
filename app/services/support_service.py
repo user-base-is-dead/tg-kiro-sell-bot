@@ -20,6 +20,10 @@ from app.utils.text import escape_html
 
 logger = logging.getLogger(__name__)
 
+# The category every order dispute is filed under. One constant so the admin queue, the buyer's
+# ticket list and the thread header can never disagree about what this kind of ticket is called.
+ORDER_DISPUTE_CATEGORY = "Order Dispute"
+
 
 async def _send_media(
     bot: Bot,
@@ -100,25 +104,37 @@ def format_topic_name(ticket_number: str, user: User) -> str:
 class ActiveThread(NamedTuple):
     """The one conversation a user already has running, whichever kind it is.
 
-    `kind` is "warranty" or "ticket" so the caller can say which one is in the way — being told
-    "you already have something open" without being told what is how a user ends up convinced the
-    bot is broken.
+    `kind` is "warranty", "order" or "ticket" so the caller can say which one is in the way — being
+    told "you already have something open" without being told what is how a user ends up convinced
+    the bot is broken.
     """
 
     kind: str
     reference: str
 
 
+def ticket_group_id(ticket: SupportTicket) -> int | None:
+    """Which chat this ticket's topic lives in.
+
+    An ordinary ticket has NULL and belongs to SUPPORT_GROUP_ID. An order dispute carries
+    ORDERS_GROUP_ID explicitly, because its topic is the order's own log thread — so every relay and
+    every close has to ask the ticket where it lives rather than assuming the support group.
+    """
+    return ticket.group_chat_id or get_settings().support_group_id
+
+
 async def active_thread(session: AsyncSession, user_id: int) -> ActiveThread | None:
     """What is blocking this user from opening something new, or None if nothing is.
 
-    One live conversation per person, whether it started as a warranty claim or a plain ticket.
-    Staff answer in one thread; a second one opened alongside it splits the same person across two
-    places, and the relay can only carry their replies into one of them — so the other silently
-    goes nowhere. This is the check that keeps that from ever being reachable.
+    One live conversation per person, whether it started as a warranty claim, an order dispute or a
+    plain ticket. Staff answer in one thread; a second one opened alongside it splits the same person
+    across two places, and the relay can only carry their replies into one of them — so the other
+    silently goes nowhere. This is the check that keeps that from ever being reachable.
 
     Warranty first, because a claim under review is the more specific state and the one with its
-    own resolution path (/done, /reject) that a plain "close the ticket" would not settle.
+    own resolution path (/done, /reject) that a plain "close the ticket" would not settle. An order
+    dispute comes next for the same reason: it is a refund being argued in the order's own thread,
+    and only an admin's /close ends it.
     """
     from app.database.repositories.warranty_repo import WarrantyRepo
 
@@ -126,6 +142,10 @@ async def active_thread(session: AsyncSession, user_id: int) -> ActiveThread | N
     if claim is not None:
         ticket = await SupportRepo(session).get_by_id(claim.claim_ticket_id) if claim.claim_ticket_id else None
         return ActiveThread("warranty", ticket.ticket_number if ticket else f"#{claim.id}")
+
+    dispute = await SupportRepo(session).get_open_order_dispute(user_id)
+    if dispute is not None:
+        return ActiveThread("order", dispute.ticket_number)
 
     ticket = await SupportRepo(session).get_open_for_user(user_id)
     if ticket is not None:
@@ -268,23 +288,25 @@ async def relay_user_message(
     # above is — but a deleted topic, a revoked bot, or a mistyped group id all used to end here
     # as a log line and nothing else: the user saw their message sit in the chat looking sent,
     # waited for a reply that could not come, and the only evidence was on the server.
-    settings = get_settings()
-    if settings.support_group_id is None:
-        logger.error("SUPPORT_GROUP_ID is unset — ticket %s cannot be relayed.", ticket.ticket_number)
+    #
+    # The destination comes off the ticket, not off SUPPORT_GROUP_ID: an order dispute is hosted by
+    # the order's own topic in ORDERS_GROUP_ID, and sending it to the support group would put it in
+    # a topic that does not exist there.
+    group_id = ticket_group_id(ticket)
+    if group_id is None:
+        logger.error("No group for ticket %s — it cannot be relayed.", ticket.ticket_number)
         raise UserError("support.system_unavailable")
 
     try:
         if attachment_file_ids:
             for media_id in attachment_file_ids:
-                await _send_media(
-                    bot, settings.support_group_id, media_id, ticket.topic_id, strict=True
-                )
+                await _send_media(bot, group_id, media_id, ticket.topic_id, strict=True)
         if text:
-            await bot.send_message(settings.support_group_id, escape_html(text), message_thread_id=ticket.topic_id)
+            await bot.send_message(group_id, escape_html(text), message_thread_id=ticket.topic_id)
     except TelegramAPIError as exc:
         logger.error(
-            "Couldn't relay message to SUPPORT_GROUP_ID=%s topic=%s for ticket %s (%s)",
-            settings.support_group_id,
+            "Couldn't relay message to group=%s topic=%s for ticket %s (%s)",
+            group_id,
             ticket.topic_id,
             ticket.ticket_number,
             exc,
@@ -337,8 +359,11 @@ async def close_ticket(session: AsyncSession, *, ticket_id: int, reason: str) ->
 
 async def _close_topic(bot: Bot, ticket: SupportTicket) -> None:
     """Retire the forum thread so staff can't keep typing into something nobody reads. Best-effort:
-    a lost topic must not roll back a close that is already done as far as the caller is concerned."""
-    group_id = get_settings().support_group_id
+    a lost topic must not roll back a close that is already done as far as the caller is concerned.
+
+    For an order dispute this is the order's own topic — closing the ticket is what finally closes
+    the order thread, which stayed open precisely because the refund was unfinished."""
+    group_id = ticket_group_id(ticket)
     if group_id is None or ticket.topic_id is None:
         return
     try:
@@ -373,9 +398,79 @@ async def announce_closure(bot: Bot, session: AsyncSession, ticket: SupportTicke
     which is already committed as far as the caller is concerned."""
     buyer = await UserRepo(session).get_by_id(ticket.user_id)
     if buyer and buyer.chat_id:
+        # An order dispute gets its own wording. The ordinary notice ("this ticket is closed") reads
+        # as a door shut in the face of somebody who is still owed money; what is actually true is
+        # that the thread on the order has ended and the normal ticket system — which was blocked
+        # while the dispute ran — is theirs again.
+        key = "support.dispute_closed_notice" if ticket.order_id else "support.closed_notice"
         try:
-            await bot.send_message(buyer.chat_id, t("support.closed_notice", buyer.locale))
+            await bot.send_message(buyer.chat_id, t(key, buyer.locale))
         except TelegramAPIError as exc:
             logger.warning("Couldn't tell user about closure of %s (%s)", ticket.ticket_number, exc)
 
     await _close_topic(bot, ticket)
+
+
+async def create_order_dispute_ticket(
+    bot: Bot,
+    session: AsyncSession,
+    *,
+    user: User,
+    order_id: str,
+    order_number: str,
+    group_chat_id: int,
+    topic_id: int,
+    subject: str,
+    body: str,
+) -> NewTicket:
+    """Turn an order's existing log topic into a live conversation with the buyer.
+
+    Unlike `create_ticket` this opens no topic: the order already has one, and the whole point is
+    that the refund is argued where the order's history is, rather than in a second thread that
+    repeats none of it. So the ticket is bound to that topic (`group_chat_id` + `topic_id`) and the
+    relay carries the buyer's messages into it.
+
+    `reached_staff` is false when the group refused the post — the ticket row still exists, but
+    nobody was actually told, and the caller must not tell the buyer to start typing on the strength
+    of a row alone.
+    """
+    now = datetime.now(UTC)
+    ticket = SupportTicket(
+        ticket_number=new_ticket_number(),
+        user_id=user.id,
+        category=ORDER_DISPUTE_CATEGORY,
+        subject=subject[:256],
+        status=TicketStatus.OPEN,
+        topic_id=topic_id,
+        group_chat_id=group_chat_id,
+        order_id=order_id,
+        opened_at=now,
+    )
+    session.add(ticket)
+    await session.flush()
+
+    await SupportRepo(session).add_message(
+        ticket_id=ticket.id, author_type="SYSTEM", author_telegram_id=0, content=body, created_at=now
+    )
+
+    header = (
+        f"🎫 <b>{ticket.ticket_number}</b> — the buyer is now connected to this thread\n"
+        f"📂 {ORDER_DISPUTE_CATEGORY} · order <code>{escape_html(order_number)}</code>\n\n"
+        f"{_identity_block(user)}\n\n"
+        f"{escape_html(body)}\n\n"
+        "💬 Anything you write here reaches them, and anything they write lands here. "
+        "Run <code>/close</code> in this topic when it's settled."
+    )
+    try:
+        await bot.send_message(group_chat_id, header, message_thread_id=topic_id)
+    except TelegramAPIError as exc:
+        logger.error(
+            "Order dispute %s created but the order thread (group=%s topic=%s) refused it (%s)",
+            ticket.ticket_number,
+            group_chat_id,
+            topic_id,
+            exc,
+        )
+        return await _settle_undelivered(session, ticket, await _notify_admins(bot, f"⚠️ {header}"))
+
+    return NewTicket(ticket, True)

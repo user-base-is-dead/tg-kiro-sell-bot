@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters.is_admin import is_admin_user
 from app.core.config import get_settings
+from app.database.models.support import TicketStatus
 from app.database.models.user import User
 from app.database.repositories.support_repo import SupportRepo
 from app.locales.i18n import t
@@ -62,12 +63,20 @@ async def dm_relay(message: Message, session: AsyncSession, user: User | None = 
 
 
 async def group_relay(message: Message, session: AsyncSession, user: User | None = None) -> None:
-    """Any message inside a forum topic of the configured support group, from a staff member,
-    gets mirrored to the ticket owner's DM. Supports text, photos, and documents."""
+    """Any message inside a ticket's forum topic, from a staff member, gets mirrored to the ticket
+    owner's DM. Supports text, photos, and documents.
+
+    Two groups qualify: SUPPORT_GROUP_ID, and ORDERS_GROUP_ID for a cancelled order whose thread has
+    become a dispute the buyer is connected to. Topic numbers are per-chat, so which group the message
+    came from is part of identifying the ticket — matching on the topic id alone would eventually
+    relay a reply to the wrong buyer.
+    """
     if user is None:
         return
     settings = get_settings()
-    if settings.support_group_id is None or message.chat.id != settings.support_group_id:
+    in_support = settings.support_group_id is not None and message.chat.id == settings.support_group_id
+    in_orders = settings.orders_group_id is not None and message.chat.id == settings.orders_group_id
+    if not (in_support or in_orders):
         return
     if message.message_thread_id is None:
         return
@@ -82,8 +91,14 @@ async def group_relay(message: Message, session: AsyncSession, user: User | None
     if not await is_admin_user(session, user.telegram_id):
         return
 
-    ticket = await SupportRepo(session).get_by_topic_id(message.message_thread_id)
+    ticket = await SupportRepo(session).get_by_topic_in_group(
+        message.message_thread_id, message.chat.id, is_support_group=in_support
+    )
     if ticket is None:
+        return
+    # An order thread that nobody has connected the buyer to is a log, not a conversation: staff talk
+    # about the order in it all the time, and mirroring that to the buyer would leak internal notes.
+    if in_orders and ticket.status not in (TicketStatus.OPEN, TicketStatus.PENDING):
         return
 
     await relay_staff_message(message.bot, session, ticket=ticket, staff_telegram_id=user.telegram_id, text=text, attachment_file_ids=file_ids)

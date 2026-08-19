@@ -37,7 +37,14 @@ async def archive_stale_tickets(sessionmaker: async_sessionmaker, bot: Bot | Non
         result = await session.execute(
             select(SupportTicket, last_message.c.last_at)
             .outerjoin(last_message, last_message.c.ticket_id == SupportTicket.id)
-            .where(SupportTicket.status.in_(_LIVE_STATUSES))
+            .where(
+                SupportTicket.status.in_(_LIVE_STATUSES),
+                # An order dispute is exempt. It is a refund the buyer is owed, argued in the order's
+                # own thread, and it ends when an admin runs /close — closing it on a timer would
+                # take money still parked in the Refund Wallet off the queue with nobody deciding
+                # anything, and would lock the buyer out of the one channel they were told to use.
+                SupportTicket.order_id.is_(None),
+            )
         )
 
         closed: list[SupportTicket] = []

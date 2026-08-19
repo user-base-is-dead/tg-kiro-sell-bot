@@ -51,14 +51,21 @@ async def list_open(message, session: AsyncSession) -> None:
 @router.message(Command("close"))
 async def close_from_topic(message: Message, session: AsyncSession, user) -> None:
     settings = get_settings()
-    if settings.support_group_id is None or message.chat.id != settings.support_group_id:
-        await message.reply("Run /close inside a ticket's topic in the support group.")
+    in_support = settings.support_group_id is not None and message.chat.id == settings.support_group_id
+    in_orders = settings.orders_group_id is not None and message.chat.id == settings.orders_group_id
+    if not (in_support or in_orders):
+        await message.reply(
+            "Run /close inside a ticket's topic in the support group, or inside a disputed order's "
+            "thread in the orders group."
+        )
         return
     if message.message_thread_id is None:
         await message.reply("Run this inside the ticket's own topic — the General thread has no ticket attached.")
         return
 
-    ticket = await SupportRepo(session).get_by_topic_id(message.message_thread_id)
+    ticket = await SupportRepo(session).get_by_topic_in_group(
+        message.message_thread_id, message.chat.id, is_support_group=in_support
+    )
     if ticket is None:
         await message.reply("No ticket is attached to this topic.")
         return
@@ -71,7 +78,13 @@ async def close_from_topic(message: Message, session: AsyncSession, user) -> Non
         actor_telegram_id=user.telegram_id, action="ticket.close", target_type="ticket", target_id=str(ticket.id)
     )
     # Confirmation goes out before the topic is closed — afterwards the thread is read-only.
-    await message.reply(f"🔒 {ticket.ticket_number} closed. The user has been notified.")
+    if ticket.order_id:
+        await message.reply(
+            f"🔒 {ticket.ticket_number} closed and this thread is going read-only. The buyer has been "
+            "told, and 💬 Live Chat is open to them again for anything still unresolved."
+        )
+    else:
+        await message.reply(f"🔒 {ticket.ticket_number} closed. The user has been notified.")
     await announce_closure(message.bot, session, ticket)
 
 

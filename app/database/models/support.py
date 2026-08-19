@@ -35,6 +35,17 @@ class SupportTicket(BigIntPKMixin, TimestampMixin, Base):
         Enum(TicketPriority, name="ticket_priority"), default=TicketPriority.NORMAL
     )
     topic_id: Mapped[int | None] = mapped_column(BigInteger)
+    # Which chat that topic lives in. NULL means SUPPORT_GROUP_ID, which is every ordinary ticket —
+    # the column exists because an order dispute is hosted by the order's own topic in
+    # ORDERS_GROUP_ID instead, and the relay has to know where to post without guessing. Stored
+    # rather than derived: the group id can be changed in the env, and a live ticket must keep
+    # talking to the group it was actually opened in.
+    group_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    # The order this ticket IS the dispute for, when it is one. Not a FK for the same reason
+    # `orders.refund_ticket_id` isn't: either side can be purged while the other's record of the
+    # link must survive. Its presence is what marks a ticket as an order dispute — the thing that
+    # locks the user out of opening anything else until an admin runs /close.
+    order_id: Mapped[str | None] = mapped_column(String(36), index=True)
     assigned_staff_id: Mapped[int | None] = mapped_column(BigInteger)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -21,8 +21,14 @@ class Settings(BaseSettings):
     # A SEPARATE forum group where every order gets its own topic, the way every ticket gets one in
     # the support group. Deliberately not the support group: those threads are conversations with a
     # buyer, and interleaving a running order log with them would bury the messages staff must
-    # actually answer. Unset means no order threads are opened at all — the bot works exactly as
-    # before, so this is safe to leave blank.
+    # actually answer.
+    #
+    # A delivered order's topic closes itself. A cancelled or refunded one stays open and becomes a
+    # dispute the buyer is connected to — their DMs relay into it and staff replies come back out —
+    # until an admin runs /close in the thread.
+    #
+    # Unset means no order threads are opened at all: the bot works exactly as before and a refund
+    # falls back to an ordinary ticket in the support group, so this is safe to leave blank.
     orders_group_id: int | None = Field(default=None, alias="ORDERS_GROUP_ID")
     log_chat_id: int | None = Field(default=None, alias="LOG_CHAT_ID")
 
