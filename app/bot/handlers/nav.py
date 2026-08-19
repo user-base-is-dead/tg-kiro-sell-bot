@@ -11,8 +11,8 @@ from app.bot.callbacks import NavCB
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
-from app.bot.handlers.user.profile import render_profile
-from app.bot.keyboards.common import back_keyboard
+from app.bot.handlers.user.profile import render_profile_screen
+from app.bot.handlers.user.refunds import render_refunds
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.texts import NO_PREVIEW, home_body
 from app.database.models.user import User
@@ -73,9 +73,14 @@ async def on_nav(
         return
 
     if target == "profile":
-        await query.message.edit_text(
-            await render_profile(session, user), reply_markup=back_keyboard(user.locale)
-        )
+        text, markup = await render_profile_screen(session, user)
+        await query.message.edit_text(text, reply_markup=markup)
+        await query.answer()
+        return
+
+    if target == "refunds":
+        text, markup = await render_refunds(session, user)
+        await query.message.edit_text(text, reply_markup=markup)
         await query.answer()
         return
 

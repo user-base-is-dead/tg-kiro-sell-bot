@@ -21,7 +21,8 @@
     "back": "🔙 Back",
     "home": "🏠 Home",
     "confirm": "✅ Confirm",
-    "cancel": "❌ Cancel"
+    "cancel": "❌ Cancel",
+    "refunds": "💸 My Refunds"
   },
   "common": {
     "unknown_action": "This action is no longer available.",
@@ -111,5 +112,22 @@
     "refund_crypto_note": "💎 You paid for this on chain, so we can't reverse it automatically. Reply in the ticket below with the BEP-20 (BSC) address you'd like the refund sent to.",
     "refund_ticket": "🎫 Ticket <code>{ticket_number}</code> is open for this refund — just reply in the chat.",
     "detail_hint": "🧾 Keep this order number handy — quoting it in 💬 Live Chat is the fastest way for us to find your purchase."
+  },
+  "refunds": {
+    "title": "━━━━━━━━━━━━━━━━━━\n💸 <b>MY REFUNDS</b>\n━━━━━━━━━━━━━━━━━━",
+    "empty": "🎉 You have no refunds.\n\nIf an order of yours is ever declined, the money comes here first — you'll see the amount, which order it was, and why, before anything else happens to it.",
+    "held": "🟠 <b>Waiting to be settled: {amount}</b>",
+    "spendable": "💳 Your spendable balance: {amount}",
+    "pending_heading": "<b>Being settled</b>",
+    "settled_heading": "<b>Finished</b>",
+    "ledger_heading": "<b>History</b>",
+    "crypto_hint": "💎 You paid on chain, so reply in the ticket with the BEP-20 address you want it sent to.",
+    "ticket": "🎫 Ticket <code>{ticket_number}</code> — reply there and it reaches us.",
+    "refund_row_parked": "+{amount} came in from a declined order",
+    "refund_row_sent": "−{amount} sent to you",
+    "refund_row_moved": "−{amount} moved into your spendable balance",
+    "refund_row_adjusted": "{amount} adjusted by our team",
+    "footer_pending": "This money is held for you and kept apart from your spendable balance, so it can't be spent by accident while we sort it out. Our team will either send it to you or move it into your balance — ask in 💬 Live Chat if you'd prefer one over the other.",
+    "footer_clear": "Everything owed to you has been settled. Nothing is outstanding."
   }
 }

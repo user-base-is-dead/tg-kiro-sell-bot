@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.callbacks import NavCB
 from app.bot.filters.menu_button import MenuButton
+from app.bot.keyboards.common import with_nav
+from app.bot.keyboards.styles import SUCCESS, btn
 from app.core.config import get_settings
 from app.database.models.order import OrderStatus
 from app.database.models.user import User
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.wallet_repo import WalletRepo
+from app.locales.i18n import t
 from app.utils.money import format_minor
 
 router = Router(name="user.profile")
@@ -48,7 +52,30 @@ async def render_profile(session: AsyncSession, user: User) -> str:
     return text
 
 
+async def render_profile_screen(
+    session: AsyncSession, user: User
+) -> tuple[str, InlineKeyboardMarkup]:
+    """The profile plus its keyboard, so the 💸 My Refunds door is on both entry points.
+
+    The button is only drawn for someone who has a refund to look at — either money still held or a
+    past one that was settled. A permanent button that opens "you have no refunds" for almost
+    everybody teaches people to ignore the row it sits in.
+    """
+    wallet = await WalletRepo(session).get_or_create(user.id, currency=get_settings().default_currency)
+    has_history = bool(await OrderRepo(session).list_refunded_for_user(user.id, limit=1))
+
+    rows = []
+    if wallet.refund_balance_minor or has_history:
+        label = t("menu.refunds", user.locale)
+        if wallet.refund_balance_minor:
+            label += f" ({format_minor(wallet.refund_balance_minor, wallet.currency)})"
+        rows.append([btn(label, NavCB(target="refunds").pack(), SUCCESS)])
+
+    return await render_profile(session, user), with_nav(rows, user.locale, back_target="home", home=False)
+
+
 @router.message(Command("profile"))
 @router.message(MenuButton("menu.profile"))
 async def cmd_profile(message: Message, session: AsyncSession, user: User) -> None:
-    await message.answer(await render_profile(session, user))
+    text, markup = await render_profile_screen(session, user)
+    await message.answer(text, reply_markup=markup)
