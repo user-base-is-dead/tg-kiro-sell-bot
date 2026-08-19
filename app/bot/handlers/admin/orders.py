@@ -8,14 +8,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminOrderCB, AdminRefundCB
+from app.bot.callbacks import AdminOrderCB, AdminRefundCB, NavCB
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.keyboards.common import nav_row
-from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.bot.states.order_decline_form import OrderDeclineForm, OrderSearchForm
 from app.bot.states.order_fulfill_form import OrderFulfillForm
-from app.bot.texts import NO_PREVIEW, home_body
 from app.database.models.order import FundingSource, OrderStatus, RefundState
 from app.database.models.order_event import OrderEventKind
 from app.database.repositories.audit_repo import AuditRepo
@@ -429,7 +427,8 @@ async def prompt_decline(
         f"• {format_minor(order.total_minor, order.currency)} is parked in their <b>Refund Wallet</b> "
         "(held separately, not spendable)\n"
         f"• {aftermath}\n\n"
-        "Or /cancel to leave it alone.",
+        "Press <b>Back</b> to leave it alone — the order stays exactly as it is, still waiting for "
+        "you to fulfil or decline it.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [btn("🔙 Back", AdminOrderCB(action="view", id=order.id).pack(), DANGER)],
@@ -439,23 +438,30 @@ async def prompt_decline(
     await query.answer()
 
 
+# Still registered, so anyone who types /cancel out of habit is not stuck — it just isn't advertised
+# on the prompt any more. Back is the documented way out, because it returns to the order with both
+# Fulfil and Decline on it: an order left neither fulfilled nor declined is still somebody's unmet
+# purchase, and "Cancelled — the order is untouched" read like the job was finished.
 @router.message(Command("cancel"), OrderDeclineForm.reason)
 async def cancel_decline(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Cancelled — the order is untouched.")
+    await message.answer(
+        "Left alone — nothing was declined. The order is still waiting for you to fulfil or decline "
+        "it; find it again under 🛒 Orders."
+    )
 
 
 @router.message(OrderDeclineForm.reason)
 async def receive_decline_reason(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
-    """The whole decline, in one step: refund parked, thread opened, buyer told, then home.
+    """The whole decline, in one step: refund parked, thread opened, buyer told, receipt.
 
-    Ends on the Home screen deliberately. A decline is finished business — there is nothing left to do
-    to this order — and the previous flow dropped the admin back onto a list with a Back button and no
-    sign that anything had been recorded.
+    The receipt is the last screen and it carries its own way out (🏠 Home). It used to push a full
+    Home screen as a second message, which buried the receipt — the one thing worth reading — under a
+    wall of menu copy the admin had not asked for.
     """
     reason = (message.text or "").strip()
     if not reason:
-        await message.answer("Send the reason as text, or /cancel:")
+        await message.answer("Send the reason as text — it's what the buyer will read:")
         return
 
     data = await state.get_data()
@@ -505,7 +511,12 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
             admin_telegram_id=user.telegram_id,
         )
         tx_hash = await _tx_hash(session, order.crypto_payment_id) if order.crypto_payment_id else None
-        notified = await refund_service.notify_buyer(
+        # An admin declining their OWN order is the same person on both ends, and they were getting
+        # the buyer's DM and the receipt back to back — two near-identical messages in one chat,
+        # differing only in "your Refund Balance" versus "their Refund Wallet". The receipt is
+        # strictly more informative, so the DM is skipped and the receipt says so.
+        self_decline = buyer.telegram_id == user.telegram_id
+        notified = not self_decline and await refund_service.notify_buyer(
             message.bot,
             buyer,
             refund_service.buyer_notice(
@@ -520,9 +531,10 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
         )
     else:
         notified = False
+        self_decline = False
 
     await message.answer(
-        _receipt(order, declined, thread, buyer, notified=notified),
+        _receipt(order, declined, thread, buyer, notified=notified, self_decline=self_decline),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [btn("📜 Open the order", AdminOrderCB(action="view", id=order.id).pack(), PRIMARY)],
@@ -533,20 +545,18 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
                         SUCCESS,
                     )
                 ],
+                # The way out lives on the receipt itself. Pushing a whole Home screen as a second
+                # message buried the receipt under menu copy nobody asked to re-read.
+                [
+                    btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
+                    btn("🏠 Home", NavCB(target="home").pack(), DANGER),
+                ],
             ]
         ),
     )
 
-    # Back to a clean session, exactly like /start. The reply keyboard is persistent and still on the
-    # client, so this is a fresh message rather than a re-installed panel.
-    await message.answer(
-        home_body(user.locale, user.first_name),
-        reply_markup=main_inline_keyboard(user.locale, is_admin=True),
-        link_preview_options=NO_PREVIEW,
-    )
 
-
-def _receipt(order, declined, thread, buyer, *, notified: bool) -> str:
+def _receipt(order, declined, thread, buyer, *, notified: bool, self_decline: bool = False) -> str:
     who = "the buyer"
     if buyer is not None:
         who = f"@{escape_html(buyer.username)}" if buyer.username else f"id {buyer.telegram_id}"
@@ -590,7 +600,9 @@ def _receipt(order, declined, thread, buyer, *, notified: bool) -> str:
                 "⚠️ The support group couldn't be reached, so nobody was pinged. The ticket exists — "
                 "check SUPPORT_GROUP_ID."
             )
-    if not notified:
+    if self_decline:
+        lines.append("ℹ️ This was your own order, so no separate buyer DM was sent — this is it.")
+    elif not notified:
         lines.append("⚠️ Couldn't DM the buyer (they may have blocked the bot).")
 
     lines += ["", "Search either ID above to pull this order up again."]
@@ -604,10 +616,20 @@ def _receipt(order, declined, thread, buyer, *, notified: bool) -> str:
 async def start_fulfill(query: CallbackQuery, callback_data: AdminOrderCB, state: FSMContext) -> None:
     await state.set_state(OrderFulfillForm.payload)
     await state.update_data(order_id=callback_data.id)
+    # Same reasoning as the decline prompt: this screen had no button at all, so the only way out was
+    # knowing to type /cancel — and an order left neither fulfilled nor declined is still a buyer
+    # waiting. Back returns to the order, where both actions are on screen.
     await query.message.edit_text(
-        "✅ Send the delivery content for this order (or /cancel):\n\n"
+        "✅ <b>Fulfil this order</b>\n\n"
+        "Send the delivery content now.\n\n"
         "The buyer receives it <b>exactly as you send it</b> — if you want a tappable copy box, "
-        "format it as code yourself; otherwise it arrives as plain text."
+        "format it as code yourself; otherwise it arrives as plain text.\n\n"
+        "Press <b>Back</b> to leave it alone — the order stays in the queue.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [btn("🔙 Back", AdminOrderCB(action="view", id=callback_data.id).pack(), DANGER)],
+            ]
+        ),
     )
     await query.answer()
 
@@ -615,7 +637,9 @@ async def start_fulfill(query: CallbackQuery, callback_data: AdminOrderCB, state
 @router.message(Command("cancel"), OrderFulfillForm.payload)
 async def cancel_fulfill(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Cancelled.")
+    await message.answer(
+        "Left alone — nothing was delivered. The order is still in the queue under 🛒 Orders."
+    )
 
 
 @router.message(OrderFulfillForm.payload)
@@ -637,10 +661,23 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id, action="order.fulfill", target_type="order", target_id=order.id
     )
-    await message.answer(f"✅ Order {order.order_number} marked delivered.")
+    # Carries its own exits, like the decline receipt — a bare "marked delivered" left the admin on a
+    # dead message with nothing to press.
+    await message.answer(
+        f"✅ Order <code>{order.order_number}</code> marked delivered.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [btn("📜 Open the order", AdminOrderCB(action="view", id=order.id).pack(), PRIMARY)],
+                [
+                    btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
+                    btn("🏠 Home", NavCB(target="home").pack(), DANGER),
+                ],
+            ]
+        ),
+    )
 
     buyer = await UserRepo(session).get_by_id(order.user_id)
-    if buyer and buyer.chat_id:
+    if buyer and buyer.chat_id and buyer.telegram_id != user.telegram_id:
         try:
             # Word for word the message an auto-delivered buyer gets. A hand-fulfilled order is the
             # same purchase with a slower shelf behind it, and it used to arrive looking like a
