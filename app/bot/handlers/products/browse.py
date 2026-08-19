@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -129,6 +130,20 @@ async def on_category(query: CallbackQuery, callback_data: CategoryCB, session: 
     await query.answer()
 
 
+async def _show(query: CallbackQuery, text: str, markup: object) -> None:
+    """Put a screen where the pressed button is: edit the message if it can be, otherwise send one.
+
+    A store screen is always an editable text message, but this same button also rides on
+    broadcasts, and a broadcast is whatever the admin composed — a photo, a video, an album item,
+    copied with `copy_message`. `edit_text` on media is rejected outright, which is how pressing Buy
+    Now under an image ended in the generic error instead of the product page.
+    """
+    try:
+        await query.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest:
+        await query.message.answer(text, reply_markup=markup)
+
+
 @router.callback_query(ProductCB.filter())
 async def on_product(
     query: CallbackQuery, callback_data: ProductCB, state: FSMContext, session: AsyncSession, user: User
@@ -136,21 +151,29 @@ async def on_product(
     if not query.message:
         return
 
+    # A toast to show alongside the page, when Buy Now could not do what it said. Empty for a plain
+    # page open.
+    notice = ""
+
     if callback_data.action == "buy":
         from app.bot.handlers.orders.checkout import render_quantity_prompt
 
         # Buy Now asks how many before it asks how to pay. The product and its cap go into state
         # because the answer arrives as a plain message, which carries nothing else to identify it.
         rendered = await render_quantity_prompt(session, int(callback_data.id), user)
-        if rendered is None:
-            await query.answer(t("common.unknown_action", user.locale), show_alert=True)
+        if rendered is not None:
+            text, markup, cap = rendered
+            await state.set_state(CheckoutForm.quantity)
+            await state.update_data(product_id=int(callback_data.id), max_qty=cap)
+            await _show(query, text, markup)
+            await query.answer()
             return
-        text, markup, cap = rendered
-        await state.set_state(CheckoutForm.quantity)
-        await state.update_data(product_id=int(callback_data.id), max_qty=cap)
-        await query.message.edit_text(text, reply_markup=markup)
-        await query.answer()
-        return
+        # Nothing to sell right now — sold out, or somebody is holding the last one. This used to
+        # answer "This action is no longer available", which is both wrong (the product exists) and a
+        # dead end: the most common way to press this button is a broadcast announcing the product,
+        # often one saying stock is coming back. So it falls through to the product's own page, which
+        # explains the stock state and carries the way back in when it returns.
+        notice = t("errors.out_of_stock", user.locale)
 
     # Leaving a product page abandons any half-answered quantity question, so the next plain
     # message is a support ticket again rather than a number nobody asked for.
@@ -160,8 +183,10 @@ async def on_product(
     # last one" — without it every shopper saw the anonymous version.
     rendered = await render_product_detail(session, int(callback_data.id), user.locale, user_id=user.id)
     if rendered is None:
-        await query.answer(t("common.unknown_action", user.locale), show_alert=True)
+        # Only reachable now if the product is genuinely gone (deleted, or deactivated), which is the
+        # one case where "no longer available" is the truth.
+        await query.answer(t("errors.product_unavailable", user.locale), show_alert=True)
         return
     text, markup = rendered
-    await query.message.edit_text(text, reply_markup=markup)
-    await query.answer()
+    await _show(query, text, markup)
+    await query.answer(notice, show_alert=bool(notice))

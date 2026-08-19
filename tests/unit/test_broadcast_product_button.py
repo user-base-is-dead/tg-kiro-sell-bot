@@ -19,6 +19,8 @@ from app.bot.handlers.admin.broadcast import (
     _buttons_json,
     _control_text,
 )
+from app.bot.keyboards.styles import PRIMARY, SUCCESS
+from app.services.broadcast_service import _build_markup
 
 _ON_SALE = {"id": 7, "name": "Netflix 1 Month", "coming_soon": False}
 _COMING_SOON = {"id": 9, "name": "Spotify Family", "coming_soon": True}
@@ -31,7 +33,34 @@ def test_no_product_means_no_buttons() -> None:
 
 def test_an_on_sale_product_gets_a_buy_now_button() -> None:
     rows = json.loads(_buttons_json(_ON_SALE))
-    assert rows == [[{"text": "🛒 Buy Now", "callback_data": "prod:buy:7::1"}]]
+    assert rows == [
+        [{"text": "🛒 Buy Now", "callback_data": "prod:buy:7::1", "style": SUCCESS}]
+    ]
+
+
+def test_the_button_carries_a_style_all_the_way_to_the_sent_message() -> None:
+    """It went out colourless: the JSON had no style, and `_build_markup` dropped unknown keys
+    anyway — so the one button every user sees was the only unstyled button in the bot."""
+    markup = _build_markup(_buttons_json(_ON_SALE))
+
+    assert markup.inline_keyboard[0][0].style == SUCCESS
+
+
+def test_a_view_button_is_blue_not_green() -> None:
+    """Green means money-in everywhere else in the bot, and there is nothing to buy here."""
+    markup = _build_markup(_buttons_json(_COMING_SOON))
+
+    assert markup.inline_keyboard[0][0].style == PRIMARY
+
+
+def test_rows_stored_before_styles_existed_still_render() -> None:
+    """Broadcasts already in the database have no `style` key. They must keep sending, uncoloured,
+    rather than raising a KeyError at delivery time."""
+    legacy = json.dumps([[{"text": "🛒 Buy Now", "callback_data": "prod:buy:7"}]])
+
+    markup = _build_markup(legacy)
+
+    assert markup.inline_keyboard[0][0].style is None
 
 
 def test_an_unreleased_product_gets_a_view_button_instead() -> None:

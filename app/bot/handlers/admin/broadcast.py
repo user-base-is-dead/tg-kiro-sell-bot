@@ -242,11 +242,20 @@ def _control_keyboard(product: dict | None) -> InlineKeyboardMarkup:
 
 
 def _buttons_json(product: dict | None) -> str | None:
+    """The post's button, as the JSON the broadcast rows carry.
+
+    Hand-built rather than through `btn()` because it is stored as text on the broadcast row and
+    rebuilt at send time — but it still has to carry `style`, or it goes out as the one colourless
+    button in a bot where every button is styled. Bot API 9.4's field name is what `btn()` sets, so
+    the two stay in step.
+    """
     if not product:
         return None
     action = "view" if product["coming_soon"] else "buy"
     cb = ProductCB(action=action, id=str(product["id"])).pack()
-    return json.dumps([[{"text": _button_label(product), "callback_data": cb}]])
+    # Green for money-in, blue for a look — the same meaning these colours carry everywhere else.
+    style = PRIMARY if product["coming_soon"] else SUCCESS
+    return json.dumps([[{"text": _button_label(product), "callback_data": cb, "style": style}]])
 
 
 async def _refresh_control(query: CallbackQuery, state: FSMContext) -> None:

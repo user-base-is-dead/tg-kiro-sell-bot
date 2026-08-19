@@ -53,15 +53,23 @@ async def create_broadcast(
 
 
 def _build_markup(buttons_json: str | None):
+    """Rebuild the stored button rows for one delivery.
+
+    `style` is carried through. It used to be dropped here — the row was rebuilt from `text` and
+    `callback_data` alone — so a broadcast's Buy Now went out as the only colourless button in the
+    bot no matter what was stored. Rows written before styles existed simply have no key and default
+    to `NEUTRAL`, which is what they already rendered as.
+    """
     if not buttons_json:
         return None
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardMarkup
+
+    from app.bot.keyboards.styles import NEUTRAL, btn
 
     rows = json.loads(buttons_json)
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]) for btn in row]
-            for row in rows
+            [btn(b["text"], b["callback_data"], b.get("style", NEUTRAL)) for b in row] for row in rows
         ]
     )
 

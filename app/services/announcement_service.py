@@ -8,6 +8,7 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import ProductCB
+from app.bot.keyboards.styles import SUCCESS
 from app.core.config import get_settings
 from app.database.models.catalog import FulfillmentMode, Product, ProductStatus
 from app.database.repositories.product_repo import ProductRepo
@@ -88,10 +89,12 @@ def build_announcement(kind: str, product: Product, available: int) -> str:
 
 
 def _buy_buttons(kind: str, product: Product) -> str | None:
+    """Same shape as the hand-composed broadcast's button, `style` included — an announcement's Buy
+    Now went out colourless while every other button in the bot is styled."""
     if kind == _SOLD_OUT:
         return None
     cb = ProductCB(action="buy", id=str(product.id)).pack()
-    return json.dumps([[{"text": "🛒 Buy Now", "callback_data": cb}]])
+    return json.dumps([[{"text": "🛒 Buy Now", "callback_data": cb, "style": SUCCESS}]])
 
 
 async def send_announcement(
