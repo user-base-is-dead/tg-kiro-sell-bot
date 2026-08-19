@@ -66,7 +66,9 @@ class AdminOrderCB(CallbackData, prefix="aord"):
 class AdminRefundCB(CallbackData, prefix="aref"):
     # "list" is the queue of everyone owed money; "view" is one buyer's settle screen; "payout"
     # records what was sent on chain; "move" turns parked money into spendable balance.
-    action: str  # "list" | "view" | "payout" | "move" | "moveall"
+    # No "moveall": it was the same action as "move" with the amount decided for you, and having both
+    # made one decision look like two. Both prompts take a typed amount now.
+    action: str  # "list" | "view" | "payout" | "move"
     id: str = ""  # user id
     order_id: str = ""
     # Where the settle screen was opened FROM, so its Back button returns there instead of always

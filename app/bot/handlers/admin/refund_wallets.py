@@ -162,44 +162,39 @@ async def render_settle(
                 lines.append(f"      {escape_html(txn.admin_note)}")
         lines.append("")
 
-    lines += [
-        "<b>What you can do</b>",
-        "📤 <b>Record a payout</b> — you sent the money outside the bot (a USDT transfer). This does "
-        "not send anything; it writes down what left, so the held balance stops claiming money that "
-        "is already gone.",
-        "➡️ <b>Move to their wallet</b> — turn it into ordinary spendable balance, if they would "
-        "rather have credit than a transfer.",
-    ]
-    if holder.refund_balance_minor <= 0:
-        lines += ["", "Nothing is held for this buyer right now."]
+    # Explaining the two actions only makes sense while there is something to act on. At zero the
+    # buttons are gone anyway, and a "maximum you can enter is $0.00" line is just noise on a screen
+    # whose only real message is "this one is done".
+    if holder.refund_balance_minor > 0:
+        lines += [
+            "<b>What you can do</b>",
+            "📤 <b>Refund</b> — you are sending the money out yourself (a USDT transfer). Type how much.",
+            "➡️ <b>Move to wallet</b> — turn it into spendable balance they can buy with. Type how much.",
+            "",
+            "Either way you type the amount, so you can settle part of it now and the rest later. "
+            f"The most you can enter is what is held: <b>{format_minor(holder.refund_balance_minor, holder.currency)}</b>.",
+        ]
+    else:
+        lines.append("✅ Nothing is held for this buyer — every refund of theirs is settled.")
 
+    # Two buttons, not three. "Move all" and "Move part of it" were the same action asked two
+    # different ways, and the pair made the screen read like there were three unrelated things to
+    # choose between. Both prompts now take an amount, and the full held figure is offered as the
+    # default inside them — so settling everything is still one number, not one extra button.
     rows: list[list[InlineKeyboardButton]] = []
     if holder.refund_balance_minor > 0:
         rows.append(
             [
                 btn(
-                    "📤 Record a payout",
+                    "📤 Refund",
                     AdminRefundCB(action="payout", id=str(user_id), order_id=order_id, src=src).pack(),
                     PRIMARY,
-                )
-            ]
-        )
-        rows.append(
-            [
+                ),
                 btn(
-                    f"➡️ Move all ({format_minor(holder.refund_balance_minor, holder.currency)}) to wallet",
-                    AdminRefundCB(action="moveall", id=str(user_id), order_id=order_id, src=src).pack(),
-                    SUCCESS,
-                )
-            ]
-        )
-        rows.append(
-            [
-                btn(
-                    "➡️ Move part of it",
+                    "➡️ Move to wallet",
                     AdminRefundCB(action="move", id=str(user_id), order_id=order_id, src=src).pack(),
                     SUCCESS,
-                )
+                ),
             ]
         )
 
@@ -263,19 +258,18 @@ async def prompt_payout(
     await state.update_data(
         user_id=holder.user.id, order_id=callback_data.order_id, src=callback_data.src
     )
+    held = format_minor(holder.refund_balance_minor, holder.currency)
     await query.message.edit_text(
-        "📤 <b>Record a payout</b>\n\n"
-        f"{_handle(holder.user)} · held: "
-        f"<b>{format_minor(holder.refund_balance_minor, holder.currency)}</b>\n\n"
-        "⚠️ <b>This screen sends no money.</b> The bot holds no wallet key. Send the USDT from your "
-        "own wallet first, then come back and write down what you sent — that is all this does.\n\n"
-        "<b>Send one message: the amount, then a note.</b>\n"
+        "📤 <b>Refund</b>\n\n"
+        f"{_handle(holder.user)} · held: <b>{held}</b>\n\n"
+        "<b>Type how much you are refunding.</b>\n"
+        f"<code>{holder.refund_balance_minor / 100:.2f}</code> — all of it\n"
+        "<code>2.00</code> — part of it, the rest stays held\n\n"
+        f"⚠️ Maximum is <b>{held}</b>. Anything higher is refused and nothing changes.\n\n"
+        "You can add a note after the amount, and it is kept on the order's history:\n"
         f"<code>{holder.refund_balance_minor / 100:.2f} sent USDT, tx 0xabc123</code>\n\n"
-        "The amount comes off the held balance. The note is kept on the order's history, so six "
-        "weeks from now the payout still says where it went.\n\n"
-        "Paid only part of it? Send just that part — the rest stays held.\n\n"
-        "If you would rather give them shop credit instead of a transfer, press Back and use "
-        "<b>Move to wallet</b>.",
+        "ℹ️ The bot holds no wallet key, so it does not send the transfer — you send it, this records "
+        "it and takes the amount off the held balance.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -350,10 +344,9 @@ async def apply_payout(message: Message, state: FSMContext, session: AsyncSessio
     await state.clear()
 
     currency = get_settings().default_currency
-    lines = [
-        f"📤 Recorded a payout of <b>{format_minor(amount_minor, currency)}</b>.",
-        f"Note: {escape_html(note)}",
-    ]
+    lines = [f"📤 Refunded <b>{format_minor(amount_minor, currency)}</b>."]
+    if note and note != "Paid out by admin":
+        lines.append(f"Note: {escape_html(note)}")
     if event is not None:
         lines.append(f"🔖 Payout ID: <code>{event.event_number}</code>")
     lines.append("")
@@ -372,45 +365,6 @@ async def apply_payout(message: Message, state: FSMContext, session: AsyncSessio
 # ---- Moving parked money into the spendable wallet ----
 
 
-@router.callback_query(AdminRefundCB.filter(F.action == "moveall"))
-async def move_all(query: CallbackQuery, callback_data: AdminRefundCB, session: AsyncSession, user) -> None:
-    holder = await refund_service.holder_for(session, int(callback_data.id))
-    if holder is None or holder.refund_balance_minor <= 0:
-        await query.answer("Nothing held for this buyer.", show_alert=True)
-        return
-
-    amount_minor = holder.refund_balance_minor
-    order = await OrderRepo(session).get_by_id(callback_data.order_id) if callback_data.order_id else None
-    try:
-        event = await refund_service.move_to_spendable(
-            session,
-            user_id=holder.user.id,
-            amount_minor=amount_minor,
-            admin_telegram_id=user.telegram_id,
-            order=order,
-        )
-    except UserError:
-        await query.answer("Couldn't move it — the held amount changed.", show_alert=True)
-        return
-
-    await AuditRepo(session).log(
-        actor_telegram_id=user.telegram_id,
-        action="refund.move",
-        target_type="user",
-        target_id=str(holder.user.id),
-        metadata={"amount_minor": amount_minor, "event": event.event_number if event else None},
-    )
-    await query.answer(f"Moved {format_minor(amount_minor, holder.currency)} to their wallet.")
-
-    rendered = await render_settle(
-        session, holder.user.id, order_id=callback_data.order_id, src=callback_data.src
-    )
-    if rendered is not None:
-        text, markup = rendered
-        await query.message.edit_text(text, reply_markup=markup)
-    await _tell_buyer_settled(query, session, holder.user.id, amount_minor, kind="move")
-
-
 @router.callback_query(AdminRefundCB.filter(F.action == "move"))
 async def prompt_move(
     query: CallbackQuery, callback_data: AdminRefundCB, state: FSMContext, session: AsyncSession
@@ -424,14 +378,15 @@ async def prompt_move(
     await state.update_data(
         user_id=holder.user.id, order_id=callback_data.order_id, src=callback_data.src
     )
+    held = format_minor(holder.refund_balance_minor, holder.currency)
     await query.message.edit_text(
-        "➡️ <b>Move part of the refund to their wallet</b>\n\n"
-        f"{_handle(holder.user)} · held: "
-        f"<b>{format_minor(holder.refund_balance_minor, holder.currency)}</b>\n\n"
-        "<b>Send just the amount</b> — e.g. <code>5.00</code>.\n\n"
-        "It becomes ordinary spendable balance they can buy things with, immediately. Whatever is "
-        "left over stays held.\n\n"
-        "Press <b>Back</b> to leave the balance alone.",
+        "➡️ <b>Move to wallet</b>\n\n"
+        f"{_handle(holder.user)} · held: <b>{held}</b>\n\n"
+        "<b>Type how much to move.</b>\n"
+        f"<code>{holder.refund_balance_minor / 100:.2f}</code> — all of it\n"
+        "<code>2.00</code> — part of it, the rest stays held\n\n"
+        f"⚠️ Maximum is <b>{held}</b>. Anything higher is refused and nothing changes.\n\n"
+        "It becomes ordinary spendable balance they can buy with, immediately.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
