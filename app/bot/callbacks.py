@@ -69,6 +69,10 @@ class AdminRefundCB(CallbackData, prefix="aref"):
     action: str  # "list" | "view" | "payout" | "move" | "moveall"
     id: str = ""  # user id
     order_id: str = ""
+    # Where the settle screen was opened FROM, so its Back button returns there instead of always
+    # dumping the admin on the refund queue — which, reached from a user's profile, is a list that
+    # never contained the screen they were just on.
+    src: str = "list"  # "list" | "profile" | "order"
     page: int = 1
 
 

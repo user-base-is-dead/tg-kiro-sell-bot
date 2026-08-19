@@ -162,7 +162,7 @@ def _detail_keyboard(target, page: int, *, target_is_admin: bool = False) -> Inl
         ),
         btn(
             "💸 Refund Wallet",
-            AdminRefundCB(action="view", id=str(target.id)).pack(),
+            AdminRefundCB(action="view", id=str(target.id), src="profile").pack(),
             PRIMARY,
         ),
     ]

@@ -15,7 +15,7 @@ from app.bot.callbacks import (
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.common import with_nav
-from app.bot.keyboards.styles import PRIMARY, btn
+from app.bot.keyboards.styles import PRIMARY, SUCCESS, btn
 from app.database.models.user import User
 
 router = Router(name="admin.panel")
@@ -58,10 +58,11 @@ def _panel_keyboard(locale: str) -> InlineKeyboardMarkup:
                 btn("👥 Users", AdminMiscCB(action="users").pack(), PRIMARY),
                 btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
             ],
-            [
-                btn("💸 Refund Wallets", AdminMiscCB(action="refunds").pack(), PRIMARY),
-                btn("🎁 Gift Codes", AdminGiftCB(action="list").pack(), PRIMARY),
-            ],
+            # Its own full-width row rather than sharing one with Gift Codes: this is the only screen
+            # that shows money the store owes people, so it should not read as a sibling of a promo
+            # tool.
+            [btn("💸 Refund Wallets", AdminMiscCB(action="refunds").pack(), SUCCESS)],
+            [btn("🎁 Gift Codes", AdminGiftCB(action="list").pack(), PRIMARY)],
             [
                 btn("📢 Broadcast", AdminMiscCB(action="broadcast").pack(), PRIMARY),
                 btn("⚙️ Settings", AdminMiscCB(action="settings").pack(), PRIMARY),

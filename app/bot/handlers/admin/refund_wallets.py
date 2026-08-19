@@ -8,10 +8,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminMiscCB, AdminOrderCB, AdminRefundCB
+from app.bot.callbacks import AdminMiscCB, AdminOrderCB, AdminRefundCB, AdminUserCB
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.keyboards.common import nav_row
-from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
+from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
 from app.bot.states.refund_wallet_form import RefundMoveForm, RefundPayoutForm
 from app.core.config import get_settings
 from app.database.models.order import FundingSource, RefundState
@@ -86,8 +86,8 @@ async def render_queue(session: AsyncSession) -> tuple[str, InlineKeyboardMarkup
         ]
         for h in holders
     ]
-    if not rows:
-        rows = [[btn("— none —", "noop", NEUTRAL)]]
+    # No "— none —" filler row. An empty queue is the healthy state and the text above already says
+    # so; a button that looks tappable and does nothing just invites the tap.
     rows.append(nav_row("en", back_target="admin_panel", home=False))
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -108,7 +108,7 @@ async def open_queue(event, session: AsyncSession, state: FSMContext) -> None:
 
 
 async def render_settle(
-    session: AsyncSession, user_id: int, *, order_id: str = ""
+    session: AsyncSession, user_id: int, *, order_id: str = "", src: str = "list"
 ) -> tuple[str, InlineKeyboardMarkup] | None:
     holder = await refund_service.holder_for(session, user_id)
     if holder is None:
@@ -179,7 +179,7 @@ async def render_settle(
             [
                 btn(
                     "📤 Record a payout",
-                    AdminRefundCB(action="payout", id=str(user_id), order_id=order_id).pack(),
+                    AdminRefundCB(action="payout", id=str(user_id), order_id=order_id, src=src).pack(),
                     PRIMARY,
                 )
             ]
@@ -188,7 +188,7 @@ async def render_settle(
             [
                 btn(
                     f"➡️ Move all ({format_minor(holder.refund_balance_minor, holder.currency)}) to wallet",
-                    AdminRefundCB(action="moveall", id=str(user_id), order_id=order_id).pack(),
+                    AdminRefundCB(action="moveall", id=str(user_id), order_id=order_id, src=src).pack(),
                     SUCCESS,
                 )
             ]
@@ -197,7 +197,7 @@ async def render_settle(
             [
                 btn(
                     "➡️ Move part of it",
-                    AdminRefundCB(action="move", id=str(user_id), order_id=order_id).pack(),
+                    AdminRefundCB(action="move", id=str(user_id), order_id=order_id, src=src).pack(),
                     SUCCESS,
                 )
             ]
@@ -205,8 +205,20 @@ async def render_settle(
 
     if order_id:
         rows.append([btn("🛒 Open the order", AdminOrderCB(action="view", id=order_id).pack(), PRIMARY)])
-    rows.append([btn("🔙 Back to refund list", AdminRefundCB(action="list").pack(), DANGER)])
+    rows.append([_back_button(user_id, src)])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _back_button(user_id: int, src: str) -> InlineKeyboardButton:
+    """Back goes where the admin actually came from.
+
+    Opened from a user's profile, "Back to refund list" sent them to the queue of everyone owed
+    money — a list that, for a buyer holding nothing, does not contain the screen they were just on
+    and often has no rows at all. So the label lied and the destination was a dead end.
+    """
+    if src == "profile":
+        return btn("🔙 Back to profile", AdminUserCB(action="view", id=str(user_id)).pack(), DANGER)
+    return btn("🔙 Back to refund list", AdminRefundCB(action="list").pack(), DANGER)
 
 
 @router.callback_query(AdminRefundCB.filter(F.action == "list"))
@@ -224,7 +236,9 @@ async def view_holder(
     # This is the Back button on both the payout and the move prompt, so it has to drop the form —
     # otherwise the admin's next message is still read as an amount.
     await state.clear()
-    rendered = await render_settle(session, int(callback_data.id), order_id=callback_data.order_id)
+    rendered = await render_settle(
+        session, int(callback_data.id), order_id=callback_data.order_id, src=callback_data.src
+    )
     if rendered is None:
         await query.answer("That account no longer exists.", show_alert=True)
         return
@@ -246,7 +260,9 @@ async def prompt_payout(
         return
 
     await state.set_state(RefundPayoutForm.amount)
-    await state.update_data(user_id=holder.user.id, order_id=callback_data.order_id)
+    await state.update_data(
+        user_id=holder.user.id, order_id=callback_data.order_id, src=callback_data.src
+    )
     await query.message.edit_text(
         "📤 <b>Record a payout</b>\n\n"
         f"{_handle(holder.user)} · held: "
@@ -264,7 +280,10 @@ async def prompt_payout(
                     btn(
                         "🔙 Back",
                         AdminRefundCB(
-                            action="view", id=str(holder.user.id), order_id=callback_data.order_id
+                            action="view",
+                            id=str(holder.user.id),
+                            order_id=callback_data.order_id,
+                            src=callback_data.src,
                         ).pack(),
                         DANGER,
                     )
@@ -335,7 +354,9 @@ async def apply_payout(message: Message, state: FSMContext, session: AsyncSessio
         lines.append(f"🔖 Payout ID: <code>{event.event_number}</code>")
     lines.append("")
 
-    rendered = await render_settle(session, int(data["user_id"]), order_id=data.get("order_id", ""))
+    rendered = await render_settle(
+        session, int(data["user_id"]), order_id=data.get("order_id", ""), src=data.get("src", "list")
+    )
     if rendered is None:
         await message.answer("\n".join(lines))
         return
@@ -377,7 +398,9 @@ async def move_all(query: CallbackQuery, callback_data: AdminRefundCB, session: 
     )
     await query.answer(f"Moved {format_minor(amount_minor, holder.currency)} to their wallet.")
 
-    rendered = await render_settle(session, holder.user.id, order_id=callback_data.order_id)
+    rendered = await render_settle(
+        session, holder.user.id, order_id=callback_data.order_id, src=callback_data.src
+    )
     if rendered is not None:
         text, markup = rendered
         await query.message.edit_text(text, reply_markup=markup)
@@ -394,7 +417,9 @@ async def prompt_move(
         return
 
     await state.set_state(RefundMoveForm.amount)
-    await state.update_data(user_id=holder.user.id, order_id=callback_data.order_id)
+    await state.update_data(
+        user_id=holder.user.id, order_id=callback_data.order_id, src=callback_data.src
+    )
     await query.message.edit_text(
         "➡️ <b>Move part of the refund to their wallet</b>\n\n"
         f"{_handle(holder.user)} · held: "
@@ -408,7 +433,10 @@ async def prompt_move(
                     btn(
                         "🔙 Back",
                         AdminRefundCB(
-                            action="view", id=str(holder.user.id), order_id=callback_data.order_id
+                            action="view",
+                            id=str(holder.user.id),
+                            order_id=callback_data.order_id,
+                            src=callback_data.src,
                         ).pack(),
                         DANGER,
                     )
@@ -464,7 +492,9 @@ async def apply_move(message: Message, state: FSMContext, session: AsyncSession,
     if event is not None:
         head += f"🔖 Move ID: <code>{event.event_number}</code>\n"
 
-    rendered = await render_settle(session, int(data["user_id"]), order_id=data.get("order_id", ""))
+    rendered = await render_settle(
+        session, int(data["user_id"]), order_id=data.get("order_id", ""), src=data.get("src", "list")
+    )
     if rendered is None:
         await message.answer(head)
         return
