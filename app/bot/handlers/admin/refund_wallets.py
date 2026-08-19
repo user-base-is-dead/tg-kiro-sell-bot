@@ -267,13 +267,15 @@ async def prompt_payout(
         "📤 <b>Record a payout</b>\n\n"
         f"{_handle(holder.user)} · held: "
         f"<b>{format_minor(holder.refund_balance_minor, holder.currency)}</b>\n\n"
-        "Send how much you paid out, and a note saying how:\n"
+        "⚠️ <b>This screen sends no money.</b> The bot holds no wallet key. Send the USDT from your "
+        "own wallet first, then come back and write down what you sent — that is all this does.\n\n"
+        "<b>Send one message: the amount, then a note.</b>\n"
         f"<code>{holder.refund_balance_minor / 100:.2f} sent USDT, tx 0xabc123</code>\n\n"
-        "The note is kept on the order's history, so six weeks from now the payout still says where "
-        "it went.\n\n"
-        "⚠️ This <b>does not send any money</b> — the bot holds no wallet key. Send the transfer "
-        "yourself first, then record it here.\n\n"
-        "Or /cancel.",
+        "The amount comes off the held balance. The note is kept on the order's history, so six "
+        "weeks from now the payout still says where it went.\n\n"
+        "Paid only part of it? Send just that part — the rest stays held.\n\n"
+        "If you would rather give them shop credit instead of a transfer, press Back and use "
+        "<b>Move to wallet</b>.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -297,7 +299,9 @@ async def prompt_payout(
 @router.message(Command("cancel"), RefundPayoutForm.amount)
 async def cancel_payout(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Cancelled — nothing recorded.")
+    await message.answer(
+        "Nothing recorded — the held balance is unchanged. Reopen it from 💸 Refund Wallets."
+    )
 
 
 @router.message(RefundPayoutForm.amount)
@@ -424,9 +428,10 @@ async def prompt_move(
         "➡️ <b>Move part of the refund to their wallet</b>\n\n"
         f"{_handle(holder.user)} · held: "
         f"<b>{format_minor(holder.refund_balance_minor, holder.currency)}</b>\n\n"
-        "Send how much to move, e.g. <code>5.00</code>.\n\n"
-        "It becomes ordinary spendable balance they can buy with. Whatever is left stays held.\n\n"
-        "Or /cancel.",
+        "<b>Send just the amount</b> — e.g. <code>5.00</code>.\n\n"
+        "It becomes ordinary spendable balance they can buy things with, immediately. Whatever is "
+        "left over stays held.\n\n"
+        "Press <b>Back</b> to leave the balance alone.",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -450,7 +455,9 @@ async def prompt_move(
 @router.message(Command("cancel"), RefundMoveForm.amount)
 async def cancel_move(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Cancelled — nothing moved.")
+    await message.answer(
+        "Nothing moved — the held balance is unchanged. Reopen it from 💸 Refund Wallets."
+    )
 
 
 @router.message(RefundMoveForm.amount)
