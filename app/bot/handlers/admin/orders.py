@@ -21,7 +21,7 @@ from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
-from app.services import order_event_service, order_service, refund_service
+from app.services import order_event_service, order_service, order_thread_service, refund_service
 from app.utils.errors import UserError
 from app.utils.money import format_minor
 from app.utils.text import as_admin_wrote_it, escape_html
@@ -533,6 +533,10 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
         notified = False
         self_decline = False
 
+    # Reopen rather than sync: a delivered order's topic is closed, and a decline after delivery has
+    # to land in the same thread instead of silently going nowhere.
+    await order_thread_service.reopen(message.bot, session, order)
+
     await message.answer(
         _receipt(order, declined, thread, buyer, notified=notified, self_decline=self_decline),
         reply_markup=InlineKeyboardMarkup(
@@ -663,6 +667,8 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
     )
     # Carries its own exits, like the decline receipt — a bare "marked delivered" left the admin on a
     # dead message with nothing to press.
+    await order_thread_service.sync(message.bot, session, order)
+
     await message.answer(
         f"✅ Order <code>{order.order_number}</code> marked delivered.",
         reply_markup=InlineKeyboardMarkup(

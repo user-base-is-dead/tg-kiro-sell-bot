@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     redis_url: str = Field(alias="REDIS_URL")
 
     support_group_id: int | None = Field(default=None, alias="SUPPORT_GROUP_ID")
+    # A SEPARATE forum group where every order gets its own topic, the way every ticket gets one in
+    # the support group. Deliberately not the support group: those threads are conversations with a
+    # buyer, and interleaving a running order log with them would bury the messages staff must
+    # actually answer. Unset means no order threads are opened at all — the bot works exactly as
+    # before, so this is safe to leave blank.
+    orders_group_id: int | None = Field(default=None, alias="ORDERS_GROUP_ID")
     log_chat_id: int | None = Field(default=None, alias="LOG_CHAT_ID")
 
     # Public community group shown on the welcome screen. Blank hides the link and its button
@@ -43,7 +49,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", alias="ENVIRONMENT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    @field_validator("support_group_id", "log_chat_id", mode="before")
+    @field_validator("support_group_id", "orders_group_id", "log_chat_id", mode="before")
     @classmethod
     def _blank_to_none(cls, v: object) -> object:
         return None if v == "" else v

@@ -19,7 +19,7 @@ from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.user_repo import UserRepo
 from app.database.repositories.wallet_repo import WalletRepo
-from app.services import refund_service
+from app.services import order_thread_service, refund_service
 from app.utils.errors import UserError
 from app.utils.money import format_minor, parse_to_minor
 from app.utils.text import escape_html
@@ -334,6 +334,10 @@ async def apply_payout(message: Message, state: FSMContext, session: AsyncSessio
         )
         return
 
+    # The settlement belongs in the order's own thread, where the decline that caused it is.
+    if order is not None:
+        await order_thread_service.reopen(message.bot, session, order)
+
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id,
         action="refund.payout",
@@ -439,6 +443,9 @@ async def apply_move(message: Message, state: FSMContext, session: AsyncSession,
     except UserError:
         await message.answer("❌ That's more than is held for this buyer. Nothing moved.")
         return
+
+    if order is not None:
+        await order_thread_service.reopen(message.bot, session, order)
 
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id,

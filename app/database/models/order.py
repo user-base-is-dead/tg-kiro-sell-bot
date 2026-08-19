@@ -90,6 +90,15 @@ class Order(TimestampMixin, Base):
     # record of having had one must survive.
     refund_ticket_id: Mapped[int | None] = mapped_column(BigInteger)
 
+    # The forum topic in ORDERS_GROUP_ID that carries this order's running log, and how far that log
+    # has been caught up. The high-water mark is what makes posting idempotent: every event already
+    # lives in `order_events`, so the thread is brought up to date by posting whatever is newer than
+    # this id — which also means a post that failed once is retried on the next action rather than
+    # lost. NULL thread_id means no thread was ever opened (no group configured, or it was added
+    # after this order).
+    thread_id: Mapped[int | None] = mapped_column(BigInteger)
+    thread_last_event_id: Mapped[int | None] = mapped_column(BigInteger)
+
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order")
 
     __table_args__ = (Index("ix_orders_user_placed", "user_id", "placed_at"),)

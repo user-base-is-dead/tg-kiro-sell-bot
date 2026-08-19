@@ -18,7 +18,7 @@ from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import _load, t
-from app.services import announcement_service, order_service, stock_hold_service
+from app.services import announcement_service, order_service, order_thread_service, stock_hold_service
 from app.services.catalog_service import compute_display_status
 from app.utils.errors import UserError
 from app.utils.money import format_minor
@@ -483,6 +483,10 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
     await announcement_service.maybe_announce_sold_out(
         query.bot, session, placed.order_item.product_id
     )
+
+    # Opens this order's own topic in the orders group and posts its card plus whatever has already
+    # happened. Best-effort by design: the purchase is done either way.
+    await order_thread_service.sync(query.bot, session, order)
 
     await query.message.edit_text("\n\n".join(lines))
     await query.answer()
