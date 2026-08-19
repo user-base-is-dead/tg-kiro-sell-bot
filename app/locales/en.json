@@ -48,7 +48,9 @@
     "out_of_stock": "🔴 Sorry, this item just went out of stock.",
     "product_unavailable": "This product is no longer available.",
     "max_per_user_reached": "You've reached the purchase limit for this product.",
-    "invalid_quantity": "Choose how many you want — a whole number, at least 1."
+    "invalid_quantity": "Choose how many you want — a whole number, at least 1.",
+    "invalid_amount": "That amount doesn't work — send a positive number.",
+    "refund_balance_short": "That's more than the refund balance holds. Nothing was changed."
   },
   "gift": {
     "prompt": "🎁 <b>Free Gift</b>\n\nHave a gift code? Send it here and its value will be added to your wallet instantly.\n\n✏️ Type your code below:",
@@ -102,6 +104,12 @@
     "history_title": "📦 <b>MY ORDERS</b>\n\nEverything you've bought from us, newest first. Tap any order to see what was in it, what you paid, and how it was delivered.\n\n🟢 Completed  🔵 Processing  🟡 Pending  🔴 Cancelled\n\n🛡️ Items that came with a warranty are tracked under 🔧 Warranty.",
     "detail_placed": "🕒 Placed: {placed_at}",
     "detail_items": "🛍️ <b>Items</b>",
+    "detail_declined": "🚫 <b>Why this was declined</b>",
+    "detail_history": "📜 <b>History</b> — quote any ID below and we'll find it instantly",
+    "refund_parked": "💸 <b>{amount}</b> is held in your <b>Refund Balance</b>. It's kept separately from your spendable wallet while our team settles it with you — so it isn't shop credit unless you ask for it to be.",
+    "refund_settled": "✅ <b>{amount}</b> has been refunded and settled.",
+    "refund_crypto_note": "💎 You paid for this on chain, so we can't reverse it automatically. Reply in the ticket below with the BEP-20 (BSC) address you'd like the refund sent to.",
+    "refund_ticket": "🎫 Ticket <code>{ticket_number}</code> is open for this refund — just reply in the chat.",
     "detail_hint": "🧾 Keep this order number handy — quoting it in 💬 Live Chat is the fastest way for us to find your purchase."
   }
 }

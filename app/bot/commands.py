@@ -30,6 +30,8 @@ USER_COMMANDS = [
 ADMIN_COMMANDS = [
     BotCommand(command="admin", description="Admin panel"),
     BotCommand(command="adjust_balance", description="Adjust user balance"),
+    BotCommand(command="pending_orders", description="Orders awaiting fulfilment"),
+    BotCommand(command="refund_wallets", description="Refunds waiting to be settled"),
     BotCommand(command="open_tickets", description="Support queue"),
 ]
 

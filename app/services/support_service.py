@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from html import escape
 from typing import NamedTuple
 
 from aiogram import Bot
@@ -17,6 +16,7 @@ from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
 from app.utils.errors import UserError
+from app.utils.text import escape_html
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +67,12 @@ def _field(value: object | None, label: str) -> str:
     Escaped because a display name may legitimately contain < or &, which would otherwise break
     the whole HTML message and take the identity block down with it."""
     text = str(value).strip() if value is not None else ""
-    return escape(text) if text else f"[{label} MISSING]"
+    return escape_html(text) if text else f"[{label} MISSING]"
 
 
 def _identity_block(user: User) -> str:
     full_name = " ".join(part for part in (user.first_name, user.last_name) if part)
-    username = f"@{escape(user.username)}" if user.username else "[USERNAME MISSING]"
+    username = f"@{escape_html(user.username)}" if user.username else "[USERNAME MISSING]"
     return (
         f"👤 Username: {username}\n"
         f"🆔 User ID: {_field(user.telegram_id, 'USER ID')}\n"
@@ -200,14 +200,14 @@ async def create_ticket(
 
     if support_group_id is None:
         logger.error("SUPPORT_GROUP_ID is unset — ticket %s has nowhere to go.", ticket.ticket_number)
-        body = f"⚠️ SUPPORT_GROUP_ID is unset.\n\n{header}\n\n{escape(subject)}"
+        body = f"⚠️ SUPPORT_GROUP_ID is unset.\n\n{header}\n\n{escape_html(subject)}"
         return await _settle_undelivered(session, ticket, await _notify_admins(bot, body))
 
     try:
         # Identity card first, the user's own words second — two messages, so the opening message
         # of the thread reads exactly like every follow-up that lands under it.
         await bot.send_message(support_group_id, header, message_thread_id=topic_id)
-        await bot.send_message(support_group_id, escape(subject), message_thread_id=topic_id)
+        await bot.send_message(support_group_id, escape_html(subject), message_thread_id=topic_id)
     except TelegramAPIError as exc:
         logger.error(
             "Ticket %s created but NOT delivered to SUPPORT_GROUP_ID=%s (%s) — falling back to admin DMs.",
@@ -215,7 +215,7 @@ async def create_ticket(
             support_group_id,
             exc,
         )
-        body = f"⚠️ Support group unreachable ({escape(str(exc))}).\n\n{header}\n\n{escape(subject)}"
+        body = f"⚠️ Support group unreachable ({escape_html(str(exc))}).\n\n{header}\n\n{escape_html(subject)}"
         return await _settle_undelivered(session, ticket, await _notify_admins(bot, body))
 
     return NewTicket(ticket, True)
@@ -280,7 +280,7 @@ async def relay_user_message(
                     bot, settings.support_group_id, media_id, ticket.topic_id, strict=True
                 )
         if text:
-            await bot.send_message(settings.support_group_id, escape(text), message_thread_id=ticket.topic_id)
+            await bot.send_message(settings.support_group_id, escape_html(text), message_thread_id=ticket.topic_id)
     except TelegramAPIError as exc:
         logger.error(
             "Couldn't relay message to SUPPORT_GROUP_ID=%s topic=%s for ticket %s (%s)",
@@ -319,7 +319,7 @@ async def relay_staff_message(
                 for media_id in attachment_file_ids:
                     await _send_media(bot, buyer.chat_id, media_id)
             if text:
-                await bot.send_message(buyer.chat_id, f"💬 <b>Support:</b>\n\n{escape(text)}")
+                await bot.send_message(buyer.chat_id, f"💬 <b>Support:</b>\n\n{escape_html(text)}")
         except TelegramAPIError:
             logger.warning("Couldn't DM user for ticket %s (blocked?)", ticket.ticket_number)
 

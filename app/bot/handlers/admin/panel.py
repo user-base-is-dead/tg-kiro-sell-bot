@@ -34,7 +34,8 @@ _PANEL_TEXT = (
     "📦 <b>Products</b> — manage inventory and product listings\n"
     "📁 <b>Categories</b> — organize and edit product categories\n"
     "👥 <b>Users</b> — view and manage user accounts\n"
-    "🛒 <b>Orders</b> — track and manage customer orders\n"
+    "🛒 <b>Orders</b> — the fulfilment queue, plus search any order by ID and read its full history\n"
+    "💸 <b>Refund Wallets</b> — money parked from declined orders, waiting for you to settle it\n"
     "🎁 <b>Gift Codes</b> — create and manage gift code campaigns\n"
     "📢 <b>Broadcast</b> — send messages to all users\n"
     "⚙️ <b>Settings</b> — configure bot settings and preferences\n"
@@ -57,7 +58,10 @@ def _panel_keyboard(locale: str) -> InlineKeyboardMarkup:
                 btn("👥 Users", AdminMiscCB(action="users").pack(), PRIMARY),
                 btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
             ],
-            [btn("🎁 Gift Codes", AdminGiftCB(action="list").pack(), PRIMARY)],
+            [
+                btn("💸 Refund Wallets", AdminMiscCB(action="refunds").pack(), PRIMARY),
+                btn("🎁 Gift Codes", AdminGiftCB(action="list").pack(), PRIMARY),
+            ],
             [
                 btn("📢 Broadcast", AdminMiscCB(action="broadcast").pack(), PRIMARY),
                 btn("⚙️ Settings", AdminMiscCB(action="settings").pack(), PRIMARY),

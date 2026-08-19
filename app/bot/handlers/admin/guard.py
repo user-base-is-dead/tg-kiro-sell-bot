@@ -17,6 +17,7 @@ from app.bot.states.gift_form import (
     GiftEditForm,
     GiftItemEditForm,
 )
+from app.bot.states.order_decline_form import OrderDeclineForm, OrderSearchForm
 from app.bot.states.order_fulfill_form import OrderFulfillForm
 from app.bot.states.product_form import (
     ProductEditForm,
@@ -25,6 +26,7 @@ from app.bot.states.product_form import (
     ProductSearchForm,
     StockUploadForm,
 )
+from app.bot.states.refund_wallet_form import RefundMoveForm, RefundPayoutForm
 from app.bot.states.settings_form import SettingsForm
 from app.bot.states.user_search_form import UserBalanceForm, UserSearchForm
 from app.database.models.user import User
@@ -49,6 +51,7 @@ _ADMIN_COMMANDS = (
     "adjust_balance",
     "dashboard",
     "pending_orders",
+    "refund_wallets",
     "open_tickets",
     "close",
     "broadcast_status",
@@ -58,7 +61,7 @@ _ADMIN_COMMANDS = (
 
 # CallbackData prefixes owned by the admin routers (see app/bot/callbacks.py).
 _ADMIN_CB_PREFIXES = frozenset(
-    {"acat", "aprod", "aord", "apay", "agift", "atick", "amisc", "auser"}
+    {"acat", "aprod", "aord", "apay", "agift", "atick", "amisc", "auser", "aref"}
 )
 
 # NavCB targets that only make sense for an admin.
@@ -75,11 +78,15 @@ _ADMIN_STATE_GROUPS = (
     GiftCreateForm,
     GiftEditForm,
     GiftItemEditForm,
+    OrderDeclineForm,
     OrderFulfillForm,
+    OrderSearchForm,
     ProductEditForm,
     ProductForm,
     ProductImportForm,
     ProductSearchForm,
+    RefundMoveForm,
+    RefundPayoutForm,
     SettingsForm,
     StockUploadForm,
     UserBalanceForm,

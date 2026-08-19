@@ -6,12 +6,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminMiscCB, AdminUserCB
+from app.bot.callbacks import AdminMiscCB, AdminRefundCB, AdminUserCB
 from app.bot.filters.is_admin import IsAdmin, is_admin_user
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.bot.states.user_search_form import UserBalanceForm, UserSearchForm
 from app.core.config import get_settings
+from app.database.models.order import RefundState
 from app.database.models.user import UserStatus
 from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.order_repo import OrderRepo
@@ -150,19 +151,27 @@ def _detail_keyboard(target, page: int, *, target_is_admin: bool = False) -> Inl
             )
         ]
     )
+    # The Refund Wallet gets its own button rather than sharing the Wallet screen, because it is not
+    # the same money: it cannot be spent, and the actions on it are "record what I sent" and "turn it
+    # into spendable balance", neither of which is a signed adjustment.
+    wallet_row = [
+        btn(
+            "💰 Wallet",
+            AdminUserCB(action="credit", id=str(target.id), page=page).pack(),
+            SUCCESS,
+        ),
+        btn(
+            "💸 Refund Wallet",
+            AdminRefundCB(action="view", id=str(target.id)).pack(),
+            PRIMARY,
+        ),
+    ]
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                # Just "Wallet": this is the only place a balance can move, because users have no
-                # self-service withdrawal — they ask support and an admin does it here by hand. The
-                # old "Credit / Debit" label read like a payment card rather than the accounting
-                # sense of the words.
-                btn(
-                    "💰 Wallet",
-                    AdminUserCB(action="credit", id=str(target.id), page=page).pack(),
-                    SUCCESS,
-                )
-            ],
+            # "Wallet" rather than "Credit / Debit": this is the only place a spendable balance can
+            # move, because users have no self-service withdrawal — they ask support and an admin does
+            # it here by hand.
+            wallet_row,
             ban_row,
             # One Back, not two. This used to carry "🔙 Back to list" *and* a plain "🔙 Back" to the
             # admin panel — two red buttons with the same word on them, where the second skipped
@@ -198,16 +207,24 @@ async def _render_detail(session: AsyncSession, target) -> str:
         f"👋 Last seen: {target.last_seen_at:%d %b %Y, %H:%M}",
         "",
         f"💳 Wallet: <b>{format_minor(wallet.balance_minor, wallet.currency)}</b>",
-        f"📦 Orders: {order_count}",
     ]
+    # Only shown when there is something in it: a "Refund: $0.00" line on every profile trains the eye
+    # to skip exactly the line that matters when it isn't zero.
+    if wallet.refund_balance_minor:
+        lines.append(
+            f"💸 Held for refund: <b>{format_minor(wallet.refund_balance_minor, wallet.currency)}</b> "
+            "(not spendable)"
+        )
+    lines.append(f"📦 Orders: {order_count}")
 
     if recent:
         lines.append("")
         lines.append("<b>Recent orders:</b>")
         for order in recent:
+            flag = " 💸" if order.refund_state is RefundState.PARKED else ""
             lines.append(
                 f"  <code>{order.order_number}</code> · "
-                f"{format_minor(order.total_minor, order.currency)} · {order.status.value}"
+                f"{format_minor(order.total_minor, order.currency)} · {order.status.value}{flag}"
             )
 
     lines += [

@@ -16,9 +16,9 @@ from app.utils.money import format_minor
 router = Router(name="user.profile")
 
 
-@router.message(Command("profile"))
-@router.message(MenuButton("menu.profile"))
-async def cmd_profile(message: Message, session: AsyncSession, user: User) -> None:
+# One copy, used by both /profile and the 👤 Profile button in the nav router. It existed as two
+# verbatim paste-ups, which is how the Refund Balance line ended up on one screen and not the other.
+async def render_profile(session: AsyncSession, user: User) -> str:
     wallet = await WalletRepo(session).get_or_create(user.id, currency=get_settings().default_currency)
     order_repo = OrderRepo(session)
     total_orders = await order_repo.count_for_user(user.id)
@@ -37,4 +37,18 @@ async def cmd_profile(message: Message, session: AsyncSession, user: User) -> No
         f"💰 Total Spent: {format_minor(total_spent, wallet.currency)}\n"
         f"💳 Balance: {format_minor(wallet.balance_minor, wallet.currency)}"
     )
-    await message.answer(text)
+    # Only when there is something in it. Money owed back on a declined order is stated as held rather
+    # than as part of the balance, because the two must never read as one number — this one cannot buy
+    # anything until an admin settles it.
+    if wallet.refund_balance_minor:
+        text += (
+            f"\n💸 Refund Balance: {format_minor(wallet.refund_balance_minor, wallet.currency)}"
+            "\n     <i>held for you while we settle it — not spendable</i>"
+        )
+    return text
+
+
+@router.message(Command("profile"))
+@router.message(MenuButton("menu.profile"))
+async def cmd_profile(message: Message, session: AsyncSession, user: User) -> None:
+    await message.answer(await render_profile(session, user))

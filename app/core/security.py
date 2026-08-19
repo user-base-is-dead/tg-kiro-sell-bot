@@ -41,6 +41,31 @@ def new_ticket_number() -> str:
     return "TCK-" + secrets.token_hex(3).upper()
 
 
+# The prefix each kind of order event wears. It is part of the identifier rather than a column you
+# have to look up, so an ID quoted on its own — in a refund conversation, in a screenshot, pasted
+# into the admin search bar — already says what kind of thing it refers to.
+EVENT_PREFIXES: dict[str, str] = {
+    "PLACED": "PLC",
+    "DELIVERED": "DLV",
+    "DECLINED": "DEC",
+    "REFUND_PARKED": "RFD",
+    "REFUND_PAID_OUT": "PAY",
+    "REFUND_MOVED": "MOV",
+    "TICKET_OPENED": "TKT",
+}
+
+
+def new_event_number(kind: str) -> str:
+    """`DEC-1A0F73` — the searchable handle for one order event.
+
+    Four hex bytes rather than the three an order number gets: events outnumber orders several to
+    one, and a collision here is a lost audit line rather than a retryable checkout. An unknown kind
+    falls back to `EVT` instead of raising — a missing prefix is a cosmetic problem, and refusing to
+    mint an ID would take down the decline it was recording.
+    """
+    return f"{EVENT_PREFIXES.get(kind, 'EVT')}-" + secrets.token_hex(3).upper()
+
+
 _GIFT_ALPHABET = string.ascii_uppercase + string.digits
 
 

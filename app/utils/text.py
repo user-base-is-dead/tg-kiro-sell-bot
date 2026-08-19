@@ -17,6 +17,24 @@ from __future__ import annotations
 PAD = "⠀" * 30
 
 
+def escape_html(text: object) -> str:
+    """Make arbitrary text safe to drop into an HTML message, without mangling punctuation.
+
+    `html.escape` defaults to `quote=True`, which also rewrites ' and " as numeric entities. That
+    matters here because the text going through this is prose somebody typed — a decline reason, a
+    payout note — and "the customer's card" came out as "the customer&#x27;s card". Quote escaping
+    exists for values placed inside HTML *attributes*; nothing here ever is, so it is switched off.
+
+    Only <, > and & are rewritten, which is exactly what Telegram requires of text that is not part
+    of a tag.
+    """
+    return (
+        str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if text is not None
+        else ""
+    )
+
+
 def as_admin_wrote_it(message) -> str:
     """The admin's message, formatting and all, ready to be re-sent as HTML.
 

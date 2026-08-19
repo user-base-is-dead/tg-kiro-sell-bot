@@ -11,16 +11,12 @@ from app.bot.callbacks import NavCB
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
+from app.bot.handlers.user.profile import render_profile
 from app.bot.keyboards.common import back_keyboard
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.texts import NO_PREVIEW, home_body
-from app.core.config import get_settings
-from app.database.models.order import OrderStatus
 from app.database.models.user import User
-from app.database.repositories.order_repo import OrderRepo
-from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import t
-from app.utils.money import format_minor
 
 logger = logging.getLogger(__name__)
 
@@ -77,25 +73,9 @@ async def on_nav(
         return
 
     if target == "profile":
-        wallet = await WalletRepo(session).get_or_create(user.id, currency=get_settings().default_currency)
-        order_repo = OrderRepo(session)
-        total_orders = await order_repo.count_for_user(user.id)
-
-        recent = await order_repo.list_for_user(user.id, offset=0, limit=100)
-        total_spent = sum(o.total_minor for o in recent if o.status == OrderStatus.COMPLETED)
-
-        username = f"@{user.username}" if user.username else "—"
-        text = (
-            "━━━━━━━━━━━━━━━━━━\n"
-            "👤 <b>MY PROFILE</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            f"Username: {username}\n"
-            f"ID: <code>{user.telegram_id}</code>\n\n"
-            f"📦 Orders: {total_orders}\n"
-            f"💰 Total Spent: {format_minor(total_spent, wallet.currency)}\n"
-            f"💳 Balance: {format_minor(wallet.balance_minor, wallet.currency)}"
+        await query.message.edit_text(
+            await render_profile(session, user), reply_markup=back_keyboard(user.locale)
         )
-        await query.message.edit_text(text, reply_markup=back_keyboard(user.locale))
         await query.answer()
         return
 

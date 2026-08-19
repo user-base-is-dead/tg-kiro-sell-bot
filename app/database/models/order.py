@@ -24,6 +24,35 @@ class WarrantyStatus(str, enum.Enum):
     VOID = "VOID"
 
 
+class FundingSource(str, enum.Enum):
+    """Where the money that paid for this order actually came from.
+
+    Every order is paid out of the wallet — crypto tops the wallet up and the wallet buys, so
+    `place_order` never sees a chain transfer. But "they pressed Pay with Crypto and sent USDT for
+    this order" and "they spent a balance they already had" are different facts to the person owed a
+    refund, and only the first one cannot be reversed by crediting a balance. CRYPTO is set when the
+    order consumed a confirmed crypto invoice that was opened from this product's checkout.
+    """
+
+    WALLET = "WALLET"
+    CRYPTO = "CRYPTO"
+
+
+class RefundState(str, enum.Enum):
+    """How far the money owed on a declined order has got.
+
+    NONE is every order that was never refunded, including live ones. PARKED means the amount is
+    sitting in the buyer's Refund Wallet, visible to them and to staff, spendable by nobody. SETTLED
+    means an admin has accounted for all of it — paid out on chain, moved into the spendable wallet,
+    or some of each. There is deliberately no automatic transition into SETTLED: a payout happens
+    outside this bot, so only a human can say it happened.
+    """
+
+    NONE = "NONE"
+    PARKED = "PARKED"
+    SETTLED = "SETTLED"
+
+
 class Order(TimestampMixin, Base):
     __tablename__ = "orders"
 
@@ -40,7 +69,26 @@ class Order(TimestampMixin, Base):
     placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The reason the order died, in the words of whoever ended it. Shown to the buyer verbatim and
+    # kept for the life of the order — a decline whose reason is not on the order is a decline
+    # nobody can explain a month later.
     failure_reason: Mapped[str | None] = mapped_column(String(512))
+    cancelled_by_admin_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    funding_source: Mapped[FundingSource] = mapped_column(
+        Enum(FundingSource, name="funding_source"), default=FundingSource.WALLET
+    )
+    # The confirmed crypto invoice this order consumed, when it was bought on chain. Kept so a refund
+    # conversation can quote the transaction the buyer will be looking at in their own wallet.
+    crypto_payment_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    refund_state: Mapped[RefundState] = mapped_column(
+        Enum(RefundState, name="refund_state"), default=RefundState.NONE
+    )
+    refund_amount_minor: Mapped[int | None] = mapped_column(Integer)
+    # The thread the refund is being settled in. Not a FK: a ticket can be purged while the order's
+    # record of having had one must survive.
+    refund_ticket_id: Mapped[int | None] = mapped_column(BigInteger)
 
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order")
 

@@ -56,8 +56,19 @@ class OrderCB(CallbackData, prefix="ord"):
 
 
 class AdminOrderCB(CallbackData, prefix="aord"):
-    action: str  # "list" | "view" | "fulfill" | "cancel"
+    # "cancel" is kept alongside "decline" so buttons already sitting in an admin's chat history from
+    # before the reason prompt existed still land somewhere sensible instead of doing nothing.
+    action: str  # "list" | "all" | "view" | "fulfill" | "decline" | "cancel" | "search"
     id: str = ""
+    page: int = 1
+
+
+class AdminRefundCB(CallbackData, prefix="aref"):
+    # "list" is the queue of everyone owed money; "view" is one buyer's settle screen; "payout"
+    # records what was sent on chain; "move" turns parked money into spendable balance.
+    action: str  # "list" | "view" | "payout" | "move" | "moveall"
+    id: str = ""  # user id
+    order_id: str = ""
     page: int = 1
 
 
@@ -84,7 +95,7 @@ class AdminTicketCB(CallbackData, prefix="atick"):
 
 
 class AdminMiscCB(CallbackData, prefix="amisc"):
-    action: str  # "dashboard" | "settings" | "logs" | "broadcast" | "users"
+    action: str  # "dashboard" | "settings" | "logs" | "broadcast" | "users" | "refunds"
     id: str = ""
     page: int = 1
 

@@ -34,6 +34,10 @@ async def render_history(session: AsyncSession, user_id: int, page_num: int, loc
 
 async def _render_detail(session: AsyncSession, order_id: str, locale: str) -> tuple[str, object] | None:
     from app.bot.keyboards.common import with_nav
+    from app.database.models.order import FundingSource, RefundState
+    from app.database.repositories.support_repo import SupportRepo
+    from app.services import order_event_service
+    from app.utils.text import escape_html
 
     order = await OrderRepo(session).get_by_id(order_id)
     if order is None:
@@ -53,6 +57,35 @@ async def _render_detail(session: AsyncSession, order_id: str, locale: str) -> t
 
     lines.append("")
     lines.append(f"💰 <b>Total: {format_minor(order.total_minor, order.currency)}</b>")
+
+    # A cancelled order used to show a status and nothing else, which is the one case where the buyer
+    # actually needs an explanation. The reason, the money and the IDs all go here so they never have
+    # to ask what happened.
+    if order.failure_reason:
+        lines += ["", t("orders.detail_declined", locale), escape_html(order.failure_reason)]
+
+    if order.refund_state is not RefundState.NONE:
+        amount = format_minor(order.refund_amount_minor or 0, order.currency)
+        key = "orders.refund_parked" if order.refund_state is RefundState.PARKED else "orders.refund_settled"
+        lines += ["", t(key, locale, amount=amount)]
+        if order.funding_source is FundingSource.CRYPTO and order.refund_state is RefundState.PARKED:
+            lines.append(t("orders.refund_crypto_note", locale))
+        if order.refund_ticket_id:
+            ticket = await SupportRepo(session).get_by_id(order.refund_ticket_id)
+            if ticket is not None:
+                lines.append(t("orders.refund_ticket", locale, ticket_number=ticket.ticket_number))
+
+    # The buyer's own copy of the IDs, so the number they quote to support is the number support can
+    # search on.
+    events = await order_event_service.timeline(session, order.id)
+    if events:
+        lines += ["", t("orders.detail_history", locale)]
+        for event in events:
+            lines.append(
+                f"<code>{event.event_number}</code> · {as_utc(event.created_at):%d %b %H:%M} · "
+                f"{event.kind.value.replace('_', ' ').title()}"
+            )
+
     lines.append("")
     lines.append(t("orders.detail_hint", locale))
 

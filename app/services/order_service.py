@@ -8,12 +8,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_cipher, new_order_number
 from app.database.models.catalog import FulfillmentMode, Product, StockStatus
-from app.database.models.order import Delivery, Order, OrderItem, OrderStatus, Warranty, WarrantyStatus
+from app.database.models.order import (
+    Delivery,
+    FundingSource,
+    Order,
+    OrderItem,
+    OrderStatus,
+    RefundState,
+    Warranty,
+    WarrantyStatus,
+)
+from app.database.models.order_event import OrderEvent, OrderEventActor, OrderEventKind
 from app.database.models.wallet import TxnType
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.user_repo import UserRepo
-from app.services import referral_service, stock_hold_service, wallet_service
+from app.services import order_event_service, referral_service, stock_hold_service, wallet_service
 from app.utils.errors import UserError
 
 IDEMPOTENCY_WINDOW_SECONDS = 15
@@ -161,6 +171,47 @@ def _start_warranty(session: AsyncSession, product: Product, order_item: OrderIt
         )
 
 
+async def _claim_crypto_invoice(session: AsyncSession, order: Order, product_id: int) -> None:
+    """Attach the on-chain payment this order was bought with, if there was one.
+
+    Crypto never pays for an order directly — pressing 💎 Pay with Crypto opens a wallet top-up
+    invoice tagged `buy:<product_id>:…`, the chain credits the wallet, and the wallet buys. So by the
+    time we get here the order looks identical to one paid from a balance the buyer already had.
+
+    It isn't identical to the person owed a refund. A balance can be handed back; a USDT transfer
+    cannot be reversed, and refunding it means asking for an address and sending money by hand. This
+    is where that difference gets written down: the most recent CONFIRMED invoice for this product
+    that no other order has claimed becomes this order's funding source.
+
+    "Not yet claimed" is what keeps it honest — an invoice is spent exactly once, so a buyer who pays
+    on chain, buys, and then buys the same product again out of leftover balance gets CRYPTO on the
+    first order and WALLET on the second. A plain Top Up Wallet invoice is tagged `topup:` and is
+    never matched here: that money genuinely became their balance.
+    """
+    from sqlalchemy import select
+
+    from app.database.models.crypto import CryptoPayment
+
+    result = await session.execute(
+        select(CryptoPayment)
+        .where(
+            CryptoPayment.user_id == order.user_id,
+            CryptoPayment.status.in_(("CONFIRMED", "COMPLETED")),
+            CryptoPayment.description.like(f"buy:{product_id}:%"),
+            CryptoPayment.order_id.is_(None),
+        )
+        .order_by(CryptoPayment.confirmed_at.desc().nullslast(), CryptoPayment.id.desc())
+        .limit(1)
+    )
+    payment = result.scalars().first()
+    if payment is None:
+        return
+
+    payment.order_id = order.id
+    order.funding_source = FundingSource.CRYPTO
+    order.crypto_payment_id = payment.id
+
+
 async def place_order(
     session: AsyncSession, *, user_id: int, product_id: int, qty: int = 1
 ) -> PlacedOrder:
@@ -252,6 +303,10 @@ async def place_order(
     )
     order.payment_txn_id = debit_txn.id
 
+    # After the debit, before delivery: the invoice is only meaningful once the money has actually
+    # moved, and the buyer's own screens need the funding source the moment the order exists.
+    await _claim_crypto_invoice(session, order, product.id)
+
     if stock_items:
         delivered_payloads = _deliver_auto(session, order, order_item, stock_items, now)
     else:
@@ -266,6 +321,27 @@ async def place_order(
     _start_warranty(session, product, order_item, user_id, now)
 
     await session.flush()
+
+    # The order's history starts here, and it starts with an ID an admin can search on. Every later
+    # event on this order — delivered, declined, refunded — hangs off the same order.
+    await order_event_service.record(
+        session,
+        order,
+        OrderEventKind.PLACED,
+        actor=OrderEventActor.USER,
+        amount_minor=order.total_minor,
+        reason=f"{order_item.product_name} ×{qty}",
+        reference=f"txn#{debit_txn.id}",
+        at=now,
+    )
+    if order.status == OrderStatus.COMPLETED:
+        await order_event_service.record(
+            session,
+            order,
+            OrderEventKind.DELIVERED,
+            reason=f"Auto-delivered {len(delivered_payloads)} item(s) from stock",
+            at=now,
+        )
 
     if order.status == OrderStatus.COMPLETED:
         buyer = await UserRepo(session).get_by_id(user_id)
@@ -353,6 +429,16 @@ async def fulfill_manual_order(
     order.completed_at = now
     await session.flush()
 
+    await order_event_service.record(
+        session,
+        order,
+        OrderEventKind.DELIVERED,
+        actor=OrderEventActor.ADMIN,
+        actor_telegram_id=admin_telegram_id,
+        reason="Delivered by hand",
+        at=now,
+    )
+
     buyer = await UserRepo(session).get_by_id(order.user_id)
     if buyer is not None:
         await referral_service.try_qualify_referral(session, user_id=order.user_id, referred_by_id=buyer.referred_by_id)
@@ -360,29 +446,15 @@ async def fulfill_manual_order(
     return order
 
 
-async def cancel_order(session: AsyncSession, *, order_id: str, reason: str) -> Order:
-    """Refunds the wallet debit and releases any RESERVED (not yet DELIVERED) stock."""
+async def _release_reserved_stock(session: AsyncSession, order: Order) -> None:
+    """Put back any credential this order reserved but never handed over.
+
+    DELIVERED rows are deliberately untouched: the buyer has seen that login, so it is spent whether
+    or not the order survived. Only RESERVED stock returns to the shelf.
+    """
     from sqlalchemy import select
 
     from app.database.models.catalog import StockItem
-
-    order = await OrderRepo(session).get_by_id(order_id)
-    if order is None or order.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
-        raise UserError("common.unknown_action")
-
-    now = datetime.now(UTC)
-
-    if order.payment_txn_id is not None:
-        await wallet_service.credit(
-            session,
-            user_id=order.user_id,
-            amount_minor=order.total_minor,
-            currency=order.currency,
-            type_=TxnType.REFUND,
-            idempotency_key=f"refund:{order.id}",
-            ref_type="order",
-            ref_id=order.id,
-        )
 
     for item in order.items:
         result = await session.execute(
@@ -392,8 +464,106 @@ async def cancel_order(session: AsyncSession, *, order_id: str, reason: str) -> 
             stock_item.status = StockStatus.AVAILABLE
             stock_item.order_item_id = None
 
+
+@dataclass(frozen=True)
+class DeclinedOrder:
+    """What a decline produced, so the caller can report it without re-reading the database.
+
+    `decline_event` and `refund_event` are the two IDs the admin and the buyer both get told. They are
+    the handles that make the decline searchable afterwards — quoting one into the admin search bar
+    lands back on this order.
+    """
+
+    order: Order
+    decline_event: OrderEvent
+    refund_event: OrderEvent | None
+    refunded_minor: int
+
+
+async def decline_order(
+    session: AsyncSession, *, order_id: str, reason: str, admin_telegram_id: int | None = None
+) -> DeclinedOrder:
+    """Kill an order with a reason on the record, and park what was paid in the Refund Wallet.
+
+    Three things happen and all three are permanent: the reason is written to the order (not only to a
+    log an admin has to go looking for), the money leaves the store's books into a balance the buyer
+    can see, and both get an ID that can be searched for later.
+
+    The money does NOT go back into the spendable balance. That was the old behaviour and it quietly
+    decided something the store hadn't: that a buyer who paid in USDT wants shop credit. Parking it
+    means an admin chooses — send it on chain, move it across, or split it — with `refund_state`
+    saying out loud that nobody has chosen yet.
+
+    Idempotent on the money: `refund:<order.id>` is the same key the old refund path used, so an order
+    that was already refunded under the previous behaviour cannot be paid twice.
+    """
+    order = await OrderRepo(session).get_by_id(order_id)
+    if order is None or order.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
+        raise UserError("common.unknown_action")
+
+    now = datetime.now(UTC)
+    reason = (reason or "").strip() or "No reason given"
+
+    await _release_reserved_stock(session, order)
+
     order.status = OrderStatus.CANCELLED
     order.cancelled_at = now
-    order.failure_reason = reason
+    # Truncated to the column, but the untruncated text also lives on the DECLINED event below, whose
+    # `reason` is TEXT — so the full wording survives even for a very long explanation.
+    order.failure_reason = reason[:512]
+    order.cancelled_by_admin_id = admin_telegram_id
     await session.flush()
-    return order
+
+    decline_event = await order_event_service.record(
+        session,
+        order,
+        OrderEventKind.DECLINED,
+        actor=OrderEventActor.ADMIN if admin_telegram_id else OrderEventActor.SYSTEM,
+        actor_telegram_id=admin_telegram_id,
+        reason=reason,
+        at=now,
+    )
+
+    refund_event: OrderEvent | None = None
+    refunded_minor = 0
+    if order.payment_txn_id is not None and order.total_minor > 0:
+        txn = await wallet_service.credit_refund_balance(
+            session,
+            user_id=order.user_id,
+            amount_minor=order.total_minor,
+            currency=order.currency,
+            idempotency_key=f"refund:{order.id}",
+            ref_type="order",
+            ref_id=order.id,
+        )
+        refunded_minor = order.total_minor
+        order.refund_state = RefundState.PARKED
+        order.refund_amount_minor = refunded_minor
+        await session.flush()
+
+        refund_event = await order_event_service.record(
+            session,
+            order,
+            OrderEventKind.REFUND_PARKED,
+            actor=OrderEventActor.ADMIN if admin_telegram_id else OrderEventActor.SYSTEM,
+            actor_telegram_id=admin_telegram_id,
+            amount_minor=refunded_minor,
+            reason="Held in Refund Wallet — not spendable until settled",
+            reference=f"txn#{txn.id}",
+            at=now,
+        )
+
+    await session.flush()
+    return DeclinedOrder(
+        order=order, decline_event=decline_event, refund_event=refund_event, refunded_minor=refunded_minor
+    )
+
+
+async def cancel_order(session: AsyncSession, *, order_id: str, reason: str) -> Order:
+    """Back-compatible entry point: a decline with no admin attached.
+
+    Kept because it is the name the rest of the codebase and any future job would reach for, and
+    because a cancellation that skipped the event trail would be invisible in exactly the screen this
+    work exists to fill.
+    """
+    return (await decline_order(session, order_id=order_id, reason=reason)).order

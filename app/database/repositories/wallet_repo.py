@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models.wallet import TxnStatus, TxnType, Wallet, WalletTransaction
+from app.database.models.wallet import TxnAccount, TxnStatus, TxnType, Wallet, WalletTransaction
 
 
 class WalletRepo:
@@ -46,3 +46,33 @@ class WalletRepo:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_refund_transactions(self, wallet_id: int, limit: int = 20) -> list[WalletTransaction]:
+        """Only the Refund Wallet side of the ledger — what arrived from declined orders and what an
+        admin has since paid out or moved across. Read on the settle screen, where mixing in ordinary
+        purchases would bury the three or four rows that actually explain the balance."""
+        result = await self._session.execute(
+            select(WalletTransaction)
+            .where(WalletTransaction.wallet_id == wallet_id, WalletTransaction.account == TxnAccount.REFUND)
+            .order_by(WalletTransaction.created_at.desc(), WalletTransaction.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_wallets_with_refunds(self, limit: int = 50) -> list[Wallet]:
+        """Every wallet currently holding refund money, largest first.
+
+        Largest rather than newest on purpose: this is a list of debts, and the biggest one is the one
+        a buyer is most likely to be chasing.
+        """
+        result = await self._session.execute(
+            select(Wallet)
+            .where(Wallet.refund_balance_minor > 0)
+            .order_by(Wallet.refund_balance_minor.desc(), Wallet.id)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def total_refund_held(self) -> int:
+        result = await self._session.execute(select(func.coalesce(func.sum(Wallet.refund_balance_minor), 0)))
+        return int(result.scalar_one())

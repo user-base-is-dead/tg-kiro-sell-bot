@@ -150,6 +150,11 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                 payment.status = "CONFIRMED"
                 payment.actual_amount = str(tx["value"])
                 payment.tx_hash = tx["hash"]
+                # This job is the only path that confirms a payment in practice, and it never used to
+                # stamp the time — so `confirmed_at` was NULL on every real payment, and anything
+                # ordering confirmed invoices by when they landed had nothing to order by. Order
+                # placement reads exactly that to decide which invoice funded which purchase.
+                payment.confirmed_at = datetime.now(UTC)
                 # Lower-cased on the way in so the tiebreaker can compare addresses directly —
                 # nodes are inconsistent about checksum casing and 0xAB… must not read as a
                 # different wallet from 0xab….

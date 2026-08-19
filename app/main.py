@@ -20,6 +20,7 @@ from app.bot.handlers.admin.orders import router as admin_orders_router
 from app.bot.handlers.admin.panel import router as admin_panel_router
 from app.bot.handlers.admin.payments import router as admin_payments_router
 from app.bot.handlers.admin.products import router as admin_products_router
+from app.bot.handlers.admin.refund_wallets import router as admin_refund_wallets_router
 from app.bot.handlers.admin.settings import router as admin_settings_router
 from app.bot.handlers.admin.support import router as admin_support_router
 from app.bot.handlers.admin.users import router as admin_users_router
@@ -68,6 +69,7 @@ def _include_routers(dp: Dispatcher) -> None:
     dp.include_router(admin_categories_router)
     dp.include_router(admin_products_router)
     dp.include_router(admin_orders_router)
+    dp.include_router(admin_refund_wallets_router)
     dp.include_router(admin_payments_router)
     dp.include_router(admin_balance_adjust_router)
     dp.include_router(admin_gifts_router)

@@ -33,5 +33,9 @@ class CryptoPayment(BigIntPKMixin, TimestampMixin, Base):
     wallet_transaction_id: Mapped[int | None] = mapped_column(
         BigInteger
     )  # Reference to wallet transaction
+    # The order this confirmed invoice ended up paying for, set once by `_claim_crypto_invoice`. It is
+    # what lets a refund conversation quote the on-chain transaction the buyer is looking at, and the
+    # NULL check on it is what stops one payment being counted as funding two separate orders.
+    order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), index=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
