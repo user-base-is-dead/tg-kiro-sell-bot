@@ -405,19 +405,29 @@ async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order
     # Opens the topic if this order has none yet, so there is somewhere to post.
     await order_thread_service.sync(bot, session, order)
     group_id = get_settings().orders_group_id
-    if group_id is not None and order.thread_id is not None:
+    if group_id is None:
+        problem = "ORDERS_GROUP_ID isn't set."
+    elif order.thread_id is None:
+        problem = "the orders group wouldn't open a topic for this order."
+    else:
         try:
             await bot.send_message(
                 group_id, text, message_thread_id=order.thread_id, reply_markup=markup
             )
             return True
         except TelegramAPIError as exc:
+            problem = f"the order thread refused it — {exc}"
             logging.getLogger(__name__).warning(
                 "Manual-order prompt for %s couldn't be posted to the order thread (%s) — falling "
                 "back to admin DMs",
                 order.order_number,
                 exc,
             )
+
+    # The DM says why it is a DM. This is the fallback path, and an admin who was told this belongs
+    # in the group has no way to tell a misconfigured group from a bot that never got restarted —
+    # so the reason travels with the message instead of living only in a log file.
+    text = f"{text}\n\n⚠️ <i>This should have gone to the order's thread, but {problem}</i>"
 
     delivered = False
     for admin_id in get_settings().admin_ids:
