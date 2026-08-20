@@ -389,6 +389,9 @@ async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order
         f"{items}\n\n"
         "The buyer has already paid. Open it to send their content."
     )
+    # Both answers, on the message that asks the question. An order waiting to be fulfilled has
+    # exactly two endings, and offering only the happy one meant declining a bad order was a trip
+    # back to the admin panel to find an order that was already on screen.
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -398,7 +401,13 @@ async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order
                     # dossier: in the thread the card above already IS the dossier.
                     callback_data=AdminOrderCB(action="fulfill", id=order.id).pack(),
                 )
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 Decline & Refund",
+                    callback_data=AdminOrderCB(action="decline", id=order.id).pack(),
+                )
+            ],
         ]
     )
 

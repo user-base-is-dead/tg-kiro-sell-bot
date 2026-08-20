@@ -418,7 +418,7 @@ async def prompt_decline(
         return
 
     await state.set_state(OrderDeclineForm.reason)
-    await state.update_data(order_id=order.id)
+    await state.update_data(order_id=order.id, thread_id=query.message.message_thread_id)
 
     paid_by = "💎 crypto (USDT, on chain)" if order.funding_source is FundingSource.CRYPTO else "💳 wallet balance"
     aftermath = (
@@ -428,7 +428,7 @@ async def prompt_decline(
         else "A refund chat opens so you can settle it with them."
     )
 
-    await query.message.edit_text(
+    body = (
         "🚫 <b>Decline &amp; Refund</b>\n\n"
         f"🛒 <code>{order.order_number}</code> · {format_minor(order.total_minor, order.currency)}\n"
         f"Paid by: {paid_by}\n\n"
@@ -441,12 +441,31 @@ async def prompt_decline(
         "(held separately, not spendable)\n"
         f"• {aftermath}\n\n"
         "Press <b>Back</b> to leave it alone — the order stays exactly as it is, still waiting for "
-        "you to fulfil or decline it.",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [btn("🔙 Back", AdminOrderCB(action="view", id=order.id).pack(), DANGER)],
-            ]
-        ),
+        "you to fulfil or decline it."
+    )
+    # Same rule as the fulfil prompt: in the order's thread this is a new message, because the one
+    # it was pressed on is the thread's own record of the order arriving.
+    in_group = query.message.chat.type in ("group", "supergroup")
+    back = (
+        AdminOrderCB(action="decline_cancel", id=order.id)
+        if in_group
+        else AdminOrderCB(action="view", id=order.id)
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[[btn("🔙 Back", back.pack(), DANGER)]])
+    if in_group:
+        await query.message.answer(body, reply_markup=markup)
+    else:
+        await query.message.edit_text(body, reply_markup=markup)
+    await query.answer()
+
+
+@router.callback_query(AdminOrderCB.filter(F.action == "decline_cancel"))
+async def cancel_decline_in_thread(query: CallbackQuery, state: FSMContext) -> None:
+    """Back on the in-thread decline prompt: drop the state and say so where it was pressed."""
+    await state.clear()
+    await query.message.edit_text(
+        "Left alone — nothing was declined. The order is still waiting for you to fulfil or decline "
+        "it, on the card above."
     )
     await query.answer()
 
@@ -472,12 +491,18 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
     Home screen as a second message, which buried the receipt — the one thing worth reading — under a
     wall of menu copy the admin had not asked for.
     """
+    data = await state.get_data()
+    # Started in an order's topic? Then only that topic can answer it — see the fulfil handler for
+    # why a group with many threads needs this and a private chat does not.
+    prompt_thread = data.get("thread_id")
+    if prompt_thread is not None and message.message_thread_id != prompt_thread:
+        raise SkipHandler
+
     reason = (message.text or "").strip()
     if not reason:
         await message.answer("Send the reason as text — it's what the buyer will read:")
         return
 
-    data = await state.get_data()
     order_id = data.get("order_id")
     if not order_id:
         await state.clear()
