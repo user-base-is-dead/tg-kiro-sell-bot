@@ -60,6 +60,16 @@ class SupportRepo:
         )
         return result.scalars().first()
 
+    async def get_dispute_for_order(self, order_id: str) -> SupportTicket | None:
+        """This order's dispute, whatever state it is in. An order has at most one — its number IS
+        the ticket number — so a second decline reopens this rather than minting a duplicate."""
+        result = await self._session.execute(
+            select(SupportTicket)
+            .where(SupportTicket.order_id == order_id)
+            .order_by(SupportTicket.opened_at.desc())
+        )
+        return result.scalars().first()
+
     async def list_for_user(self, user_id: int, limit: int = 12, offset: int = 0) -> list[SupportTicket]:
         result = await self._session.execute(
             select(SupportTicket).where(SupportTicket.user_id == user_id).order_by(SupportTicket.opened_at.desc()).limit(limit).offset(offset)

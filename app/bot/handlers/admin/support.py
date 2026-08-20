@@ -67,7 +67,15 @@ async def close_from_topic(message: Message, session: AsyncSession, user) -> Non
         message.message_thread_id, message.chat.id, is_support_group=in_support
     )
     if ticket is None:
-        await message.reply("No ticket is attached to this topic.")
+        # An order's topic starts life as a log, with nobody to close it on. It becomes closeable
+        # only once a decline connects the buyer to it; before that there is no conversation, and a
+        # delivered order closes its own topic without anybody being told anything.
+        await message.reply(
+            "This order thread is still just its log — nothing to close. It becomes a conversation "
+            "when the order is declined, and closes itself when the order is delivered."
+            if in_orders
+            else "No ticket is attached to this topic."
+        )
         return
     if ticket.status == TicketStatus.CLOSED:
         await message.reply(f"{ticket.ticket_number} is already closed.")

@@ -435,18 +435,34 @@ async def create_order_dispute_ticket(
     of a row alone.
     """
     now = datetime.now(UTC)
-    ticket = SupportTicket(
-        ticket_number=new_ticket_number(),
-        user_id=user.id,
-        category=ORDER_DISPUTE_CATEGORY,
-        subject=subject[:256],
-        status=TicketStatus.OPEN,
-        topic_id=topic_id,
-        group_chat_id=group_chat_id,
-        order_id=order_id,
-        opened_at=now,
-    )
-    session.add(ticket)
+    # The ticket number IS the order number. A dispute is not a separate thing the buyer has to
+    # track — it is this order, being argued — and quoting one id for the purchase and another for
+    # the conversation about it made people ask which one we wanted. It also means the id they are
+    # given is already searchable from the Orders screen.
+    existing = await SupportRepo(session).get_dispute_for_order(order_id)
+    if existing is not None:
+        # Same order, declined or refunded a second time: reopen the conversation it already had
+        # rather than mint a duplicate, which the unique ticket number would refuse anyway.
+        ticket = existing
+        ticket.status = TicketStatus.OPEN
+        ticket.closed_at = None
+        ticket.close_reason = None
+        ticket.subject = subject[:256]
+        ticket.topic_id = topic_id
+        ticket.group_chat_id = group_chat_id
+    else:
+        ticket = SupportTicket(
+            ticket_number=order_number[:24],
+            user_id=user.id,
+            category=ORDER_DISPUTE_CATEGORY,
+            subject=subject[:256],
+            status=TicketStatus.OPEN,
+            topic_id=topic_id,
+            group_chat_id=group_chat_id,
+            order_id=order_id,
+            opened_at=now,
+        )
+        session.add(ticket)
     await session.flush()
 
     await SupportRepo(session).add_message(
@@ -455,7 +471,7 @@ async def create_order_dispute_ticket(
 
     header = (
         f"🎫 <b>{ticket.ticket_number}</b> — the buyer is now connected to this thread\n"
-        f"📂 {ORDER_DISPUTE_CATEGORY} · order <code>{escape_html(order_number)}</code>\n\n"
+        f"📂 {ORDER_DISPUTE_CATEGORY} · the ticket id is the order id\n\n"
         f"{_identity_block(user)}\n\n"
         f"{escape_html(body)}\n\n"
         "💬 Anything you write here reaches them, and anything they write lands here. "
