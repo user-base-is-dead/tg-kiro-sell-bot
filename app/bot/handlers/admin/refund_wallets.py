@@ -486,9 +486,14 @@ async def _tell_buyer_settled(event, session: AsyncSession, user_id: int, amount
             "into your wallet — you can spend it on anything in the store now."
         )
     else:
+        # Not "reply here": paying the refund out is what ends the thread it was argued in, so by
+        # the time this arrives there is nothing left listening in this chat. They are pointed at
+        # 💬 Live Chat, which opens a fresh thread staff actually see.
         text = (
             f"📤 <b>{format_minor(amount_minor, currency)}</b> of your refund has been sent out. If you "
-            "were expecting it on chain, it should land shortly — reply here if it doesn't."
+            "were expecting it on chain, it should land shortly.\n\n"
+            "If it doesn't arrive, open <b>💬 Live Chat</b> from the menu and tell us — that starts a "
+            "new thread with our team."
         )
 
     try:
