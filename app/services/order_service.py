@@ -522,7 +522,11 @@ async def decline_order(
     that was already refunded under the previous behaviour cannot be paid twice.
     """
     order = await OrderRepo(session).get_by_id(order_id)
-    if order is None or order.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
+    # Only an order that has not been fulfilled can be declined. Refusing COMPLETED here as well as
+    # in the UI is the point: declining a delivered order flipped it to CANCELLED and wrote a decline
+    # reason onto something the buyer had already received, so the record no longer said what
+    # happened. Money owed on a delivered order is a refund, not a decline.
+    if order is None or order.status not in (OrderStatus.PENDING, OrderStatus.PROCESSING):
         raise UserError("common.unknown_action")
 
     now = datetime.now(UTC)

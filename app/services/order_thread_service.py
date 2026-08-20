@@ -280,8 +280,8 @@ async def reopen(bot: Bot, session: AsyncSession, order: Order) -> None:
     """Bring a closed thread back before posting into it.
 
     A completed order's topic is closed, and Telegram refuses messages into a closed topic. Something
-    can still happen afterwards — a delivered order gets declined and refunded — and that must land in
-    the same thread rather than silently going nowhere.
+    can still happen afterwards — money parked on the order gets settled or moved — and that must land
+    in the same thread rather than silently going nowhere.
     """
     group_id = get_settings().orders_group_id
     if group_id is None or order.thread_id is None:

@@ -86,7 +86,11 @@ def _detail_keyboard(order) -> InlineKeyboardMarkup:
 
     if order.status is OrderStatus.PROCESSING:
         rows.append([btn("✅ Fulfill", AdminOrderCB(action="fulfill", id=order.id).pack(), SUCCESS)])
-    if order.status not in (OrderStatus.CANCELLED, OrderStatus.FAILED):
+    # Declining is refusing to fulfil, so it only exists while the order is still unfulfilled. A
+    # delivered order used to offer it too, and pressing it rewrote history: a COMPLETED order the
+    # buyer had already been sent turned CANCELLED, with a decline reason on an order that was never
+    # declined. Cancelled and failed orders are past it in the other direction.
+    if order.status in (OrderStatus.PENDING, OrderStatus.PROCESSING):
         rows.append(
             [btn("🚫 Decline & Refund", AdminOrderCB(action="decline", id=order.id).pack(), DANGER)]
         )
@@ -403,6 +407,14 @@ async def prompt_decline(
         return
     if order.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
         await query.answer("This order is already cancelled.", show_alert=True)
+        return
+    if order.status is OrderStatus.COMPLETED:
+        # A button from before this rule, still sitting in somebody's chat history.
+        await query.answer(
+            "This order was already delivered — it can't be declined. Settle it through the "
+            "buyer's Refund Wallet or a warranty claim.",
+            show_alert=True,
+        )
         return
 
     await state.set_state(OrderDeclineForm.reason)
