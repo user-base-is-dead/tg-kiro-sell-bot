@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -630,21 +631,41 @@ def _receipt(order, declined, thread, buyer, *, notified: bool, self_decline: bo
 @router.callback_query(AdminOrderCB.filter(F.action == "fulfill"))
 async def start_fulfill(query: CallbackQuery, callback_data: AdminOrderCB, state: FSMContext) -> None:
     await state.set_state(OrderFulfillForm.payload)
-    await state.update_data(order_id=callback_data.id)
-    # Same reasoning as the decline prompt: this screen had no button at all, so the only way out was
-    # knowing to type /cancel — and an order left neither fulfilled nor declined is still a buyer
-    # waiting. Back returns to the order, where both actions are on screen.
-    await query.message.edit_text(
+    await state.update_data(order_id=callback_data.id, thread_id=query.message.message_thread_id)
+    body = (
         "✅ <b>Fulfil this order</b>\n\n"
         "Send the delivery content now.\n\n"
         "The buyer receives it <b>exactly as you send it</b> — if you want a tappable copy box, "
         "format it as code yourself; otherwise it arrives as plain text.\n\n"
-        "Press <b>Back</b> to leave it alone — the order stays in the queue.",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [btn("🔙 Back", AdminOrderCB(action="view", id=callback_data.id).pack(), DANGER)],
-            ]
-        ),
+        "Press <b>Back</b> to leave it alone — the order stays in the queue."
+    )
+    # In the order's thread the prompt is a new message, not an edit. The message it was pressed on
+    # is the "awaiting fulfilment" record in the thread's history, and overwriting it would erase
+    # what the thread exists to keep. Back cancels in place there, because the dossier this normally
+    # returns to is the card already sitting at the top of the same topic.
+    in_group = query.message.chat.type in ("group", "supergroup")
+    back = (
+        AdminOrderCB(action="fulfill_cancel", id=callback_data.id)
+        if in_group
+        else AdminOrderCB(action="view", id=callback_data.id)
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[[btn("🔙 Back", back.pack(), DANGER)]])
+    # Same reasoning as the decline prompt: this screen had no button at all, so the only way out was
+    # knowing to type /cancel — and an order left neither fulfilled nor declined is still a buyer
+    # waiting. Back returns to the order, where both actions are on screen.
+    if in_group:
+        await query.message.answer(body, reply_markup=markup)
+    else:
+        await query.message.edit_text(body, reply_markup=markup)
+    await query.answer()
+
+
+@router.callback_query(AdminOrderCB.filter(F.action == "fulfill_cancel"))
+async def cancel_fulfill_in_thread(query: CallbackQuery, state: FSMContext) -> None:
+    """Back on the in-thread fulfil prompt: drop the state and say so where it was pressed."""
+    await state.clear()
+    await query.message.edit_text(
+        "Left alone — nothing was delivered. The order is still in the queue under 🛒 Orders."
     )
     await query.answer()
 
@@ -660,6 +681,14 @@ async def cancel_fulfill(message: Message, state: FSMContext) -> None:
 @router.message(OrderFulfillForm.payload)
 async def receive_fulfill_payload(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
     data = await state.get_data()
+    # Started in an order's topic? Then only that topic can answer it. FSM state is keyed by chat
+    # and user, and the orders group is one chat with many topics — without this, an admin who
+    # opened the prompt in one thread and then went to talk to a buyer in another would have that
+    # message delivered as somebody else's product. Skipping hands it to the relay, where it belongs.
+    prompt_thread = data.get("thread_id")
+    if prompt_thread is not None and message.message_thread_id != prompt_thread:
+        raise SkipHandler
+
     try:
         order = await order_service.fulfill_manual_order(
             session,

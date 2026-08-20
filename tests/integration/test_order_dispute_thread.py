@@ -29,21 +29,35 @@ class FakeTopic:
 
 
 @dataclass
+class FakeSent:
+    message_id: int
+
+
+@dataclass
 class FakeBot:
     """Records what would have gone to Telegram. `sent` is (chat_id, text, thread_id) per message."""
 
     sent: list[tuple[int, str, int | None]] = field(default_factory=list)
+    edited: list[tuple[int, int, str]] = field(default_factory=list)
     created_topics: list[tuple[int, str]] = field(default_factory=list)
     closed: list[tuple[int, int]] = field(default_factory=list)
     reopened: list[tuple[int, int]] = field(default_factory=list)
     next_topic_id: int = TOPIC
+    next_message_id: int = 1000
 
     async def create_forum_topic(self, chat_id: int, name: str) -> FakeTopic:
         self.created_topics.append((chat_id, name))
         return FakeTopic(self.next_topic_id)
 
-    async def send_message(self, chat_id: int, text: str, message_thread_id: int | None = None, **kw) -> None:
+    async def send_message(self, chat_id: int, text: str, message_thread_id: int | None = None, **kw):
         self.sent.append((chat_id, text, message_thread_id))
+        # The card's message id is kept so it can be edited later, so this has to hand one back the
+        # way Telegram does — returning None made the whole sync blow up on the card.
+        self.next_message_id += 1
+        return FakeSent(self.next_message_id)
+
+    async def edit_message_text(self, text: str, chat_id: int, message_id: int, **kw) -> None:
+        self.edited.append((chat_id, message_id, text))
 
     async def close_forum_topic(self, chat_id: int, message_thread_id: int) -> None:
         self.closed.append((chat_id, message_thread_id))

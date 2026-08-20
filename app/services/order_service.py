@@ -352,16 +352,20 @@ async def place_order(
 
 
 async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order) -> bool:
-    """DM every admin that a hand-fulfilled order is waiting, with a button straight to it.
+    """Put a hand-fulfilled order in front of staff, with a button straight to it.
 
-    Manual fulfilment had no push at all: an order went PROCESSING and sat in the Pending
-    Fulfilment list until an admin happened to open the admin panel and look. From the buyer's side
-    that is indistinguishable from the feature being broken — they get "being prepared" and then
-    nothing, for as long as nobody checks.
+    It goes into the order's own topic in the orders group, under the card that already says what
+    was bought and what was paid — so the work is done where the order lives, and every admin sees
+    the same one copy of it get handled. DMing each admin separately, as this used to, scattered the
+    same job across N private chats where nobody could see whether anybody had picked it up.
+
+    Falls back to those DMs when there is no thread to post into (ORDERS_GROUP_ID unset, or the
+    group refused the topic), because a manual order nobody is told about just sits in the queue:
+    the buyer gets "being prepared" and then nothing, for as long as nobody checks.
 
     Best-effort by design. The order is already committed to the database and the queue screen is
-    still the source of truth, so a bot blocked by one admin must never fail the purchase. Returns
-    whether at least one admin was actually reached.
+    still the source of truth, so a blocked bot must never fail the purchase. Returns whether the
+    prompt actually reached anybody.
     """
     import logging
 
@@ -370,6 +374,7 @@ async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order
 
     from app.bot.callbacks import AdminOrderCB
     from app.core.config import get_settings
+    from app.services import order_thread_service
 
     buyer = await UserRepo(session).get_by_id(order.user_id)
     who = f"@{buyer.username}" if buyer and buyer.username else f"id {order.user_id}"
@@ -389,11 +394,30 @@ async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order
             [
                 InlineKeyboardButton(
                     text="✅ Fulfill now",
-                    callback_data=AdminOrderCB(action="view", id=order.id).pack(),
+                    # Straight to the "send the delivery content" prompt rather than via the
+                    # dossier: in the thread the card above already IS the dossier.
+                    callback_data=AdminOrderCB(action="fulfill", id=order.id).pack(),
                 )
             ]
         ]
     )
+
+    # Opens the topic if this order has none yet, so there is somewhere to post.
+    await order_thread_service.sync(bot, session, order)
+    group_id = get_settings().orders_group_id
+    if group_id is not None and order.thread_id is not None:
+        try:
+            await bot.send_message(
+                group_id, text, message_thread_id=order.thread_id, reply_markup=markup
+            )
+            return True
+        except TelegramAPIError as exc:
+            logging.getLogger(__name__).warning(
+                "Manual-order prompt for %s couldn't be posted to the order thread (%s) — falling "
+                "back to admin DMs",
+                order.order_number,
+                exc,
+            )
 
     delivered = False
     for admin_id in get_settings().admin_ids:
