@@ -5,15 +5,18 @@ from dataclasses import dataclass
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.database.models.order import FundingSource, Order, OrderStatus, RefundState
+from app.database.models.catalog import FulfillmentMode
+from app.database.models.order import Delivery, FundingSource, Order, OrderStatus, RefundState
 from app.database.models.order_event import OrderEvent, OrderEventKind
 from app.database.models.support import SupportTicket, TicketStatus
 from app.database.models.user import User
 from app.database.repositories.order_event_repo import OrderEventRepo
 from app.database.repositories.order_repo import OrderRepo
+from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
 from app.utils.money import format_minor
@@ -55,36 +58,119 @@ async def _buyer_handle(session: AsyncSession, order: Order) -> str:
     return f"@{buyer.username}" if buyer.username else f"id {buyer.telegram_id}"
 
 
+async def _deliveries(session: AsyncSession, order: Order) -> dict[int, Delivery]:
+    """The latest delivery per item, keyed by order_item id. A re-fulfilled item has more than one
+    row and the newest is the one that says where it stands."""
+    ids = [item.id for item in order.items]
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(Delivery).where(Delivery.order_item_id.in_(ids)).order_by(Delivery.id)
+    )
+    return {row.order_item_id: row for row in rows.scalars()}
+
+
 async def _order_card(session: AsyncSession, order: Order) -> str:
-    """The opening message of the thread: everything true about the order at a glance, so staff never
-    have to leave the group to know what they are looking at."""
+    """The whole order on one message, so staff never have to leave the group to know what they are
+    looking at — and never have to reconstruct it from the event lines underneath.
+
+    Deliberately the same picture as the admin dossier: who bought what, what it cost, how it was
+    paid for, whether it has been delivered, why it died, what is owed and whether anybody has been
+    paid back. It is edited in place on every action (see `sync`), so it reads as the order's current
+    state rather than as the moment it was placed.
+    """
     buyer = await UserRepo(session).get_by_id(order.user_id)
     full = await OrderRepo(session).get_by_id(order.id) or order
+    deliveries = await _deliveries(session, full)
 
     who = "—"
     if buyer is not None:
         handle = f"@{escape_html(buyer.username)}" if buyer.username else "no username"
-        who = f"{handle} · <code>{buyer.telegram_id}</code>"
+        who = f'<a href="tg://user?id={buyer.telegram_id}">{handle}</a> · <code>{buyer.telegram_id}</code>'
 
     lines = [
-        f"{_STATUS_EMOJI.get(order.status.value, '•')} <b>{order.order_number}</b>",
+        f"{_STATUS_EMOJI.get(order.status.value, '•')} <b>{order.order_number}</b> — {order.status.value}",
         "",
         f"👤 {who}",
     ]
     if order.placed_at:
-        lines.append(f"🕒 {as_utc(order.placed_at):%d %b %Y, %H:%M} UTC")
+        lines.append(f"🕒 Placed: {as_utc(order.placed_at):%d %b %Y, %H:%M} UTC")
+    if order.completed_at:
+        lines.append(f"📬 Delivered: {as_utc(order.completed_at):%d %b %Y, %H:%M} UTC")
+    if order.cancelled_at:
+        lines.append(f"🚫 Cancelled: {as_utc(order.cancelled_at):%d %b %Y, %H:%M} UTC")
+    if order.cancelled_by_admin_id:
+        lines.append(f"👮 By admin: <code>{order.cancelled_by_admin_id}</code>")
 
-    lines.append("")
+    lines += ["", "🛍 <b>Items</b>"]
     for item in full.items:
-        lines.append(
-            f"• {escape_html(item.product_name)} ×{item.qty} — "
-            f"{format_minor(item.unit_price_minor, order.currency)}"
-        )
+        unit = format_minor(item.unit_price_minor, order.currency)
+        line = f"• {escape_html(item.product_name)}"
+        line += f" ×{item.qty} — {unit} each" if item.qty > 1 else f" — {unit}"
+        lines.append(line)
 
-    paid = "💎 Crypto (USDT)" if order.funding_source is FundingSource.CRYPTO else "💳 Wallet"
-    lines += ["", f"💰 <b>{format_minor(order.total_minor, order.currency)}</b> · {paid}"]
+        detail = []
+        product = (
+            await ProductRepo(session).get_by_id(item.product_id) if item.product_id else None
+        )
+        if product is not None:
+            detail.append(
+                "🤖 Auto" if product.fulfillment_mode is FulfillmentMode.AUTO else "✋ Manual"
+            )
+        if item.warranty_days:
+            detail.append(f"🛡 {item.warranty_days}d warranty")
+        delivery = deliveries.get(item.id)
+        if delivery is not None and delivery.delivered_at:
+            stamp = f"{as_utc(delivery.delivered_at):%d %b %H:%M}"
+            detail.append(f"📬 delivered {stamp}")
+            if delivery.delivered_by_admin_id:
+                detail.append(f"by <code>{delivery.delivered_by_admin_id}</code>")
+        elif order.status is OrderStatus.PROCESSING:
+            detail.append("⏳ awaiting fulfilment")
+        if detail:
+            lines.append(f"   {' · '.join(detail)}")
+
+    paid = "💎 Crypto (USDT, on chain)" if order.funding_source is FundingSource.CRYPTO else "💳 Wallet balance"
+    lines += ["", f"💰 Total: <b>{format_minor(order.total_minor, order.currency)}</b>"]
+    if order.discount_minor:
+        lines.append(
+            f"🏷 Subtotal {format_minor(order.subtotal_minor, order.currency)} "
+            f"− discount {format_minor(order.discount_minor, order.currency)}"
+        )
+    lines.append(f"Paid by: {paid}")
+
+    if order.crypto_payment_id:
+        tx_hash = await _tx_hash(session, order.crypto_payment_id)
+        if tx_hash:
+            lines.append(f"🔗 Tx: <code>{escape_html(tx_hash)}</code>")
+
+    if order.failure_reason:
+        lines += ["", "🚫 <b>Decline reason</b>", escape_html(order.failure_reason)]
+
+    if order.refund_state is not RefundState.NONE:
+        amount = format_minor(order.refund_amount_minor or 0, order.currency)
+        label = {
+            RefundState.PARKED: f"🟠 <b>{amount}</b> parked in their Refund Wallet — not settled yet",
+            RefundState.SETTLED: f"🟢 <b>{amount}</b> refunded and settled",
+        }[order.refund_state]
+        lines += ["", "💸 <b>Refund</b>", label]
+        if order.refund_ticket_id:
+            ticket = await SupportRepo(session).get_by_id(order.refund_ticket_id)
+            if ticket is not None:
+                lines.append(f"🎫 Ticket: <code>{ticket.ticket_number}</code> ({ticket.status.value})")
+
+    if order.status is OrderStatus.PROCESSING:
+        lines += ["", "⏳ <b>Needs manual fulfilment</b> — Admin panel → 🛒 Orders"]
+
     lines += ["", f"🆔 <code>{order.id}</code>"]
     return "\n".join(lines)
+
+
+async def _tx_hash(session: AsyncSession, crypto_payment_id: int) -> str | None:
+    from app.database.models.crypto import CryptoPayment
+
+    payment = await session.get(CryptoPayment, crypto_payment_id)
+    return payment.tx_hash if payment else None
 
 
 def _event_line(event: OrderEvent, order: Order) -> str:
@@ -125,9 +211,13 @@ async def sync(bot: Bot, session: AsyncSession, order: Order) -> None:
             topic = await bot.create_forum_topic(chat_id=group_id, name=topic_name(order, who))
             order.thread_id = topic.message_thread_id
             await session.flush()
-            await bot.send_message(
+            card = await bot.send_message(
                 group_id, await _order_card(session, order), message_thread_id=order.thread_id
             )
+            order.thread_card_message_id = card.message_id
+            await session.flush()
+        else:
+            await _refresh_card(bot, session, group_id, order)
 
         events = await OrderEventRepo(session).list_for_order(order.id)
         pending = [e for e in events if e.id > (order.thread_last_event_id or 0)]
@@ -157,6 +247,25 @@ async def sync(bot: Bot, session: AsyncSession, order: Order) -> None:
         logger.warning("Couldn't update the order thread for %s (%s)", order.order_number, exc)
     except Exception as exc:  # noqa: BLE001 — never let the log take down the action it describes
         logger.error("Unexpected failure updating the order thread for %s: %s", order.order_number, exc)
+
+
+async def _refresh_card(bot: Bot, session: AsyncSession, group_id: int, order: Order) -> None:
+    """Edit the card at the top of the topic back into the truth.
+
+    Swallows its own failures rather than letting them abort the sync: the event lines below are the
+    part that must not be lost, and an unchanged card raises "message is not modified" as a matter of
+    course.
+    """
+    if order.thread_card_message_id is None:
+        return
+    try:
+        await bot.edit_message_text(
+            await _order_card(session, order),
+            chat_id=group_id,
+            message_id=order.thread_card_message_id,
+        )
+    except TelegramAPIError:
+        pass
 
 
 async def _close(bot: Bot, group_id: int, order: Order) -> None:

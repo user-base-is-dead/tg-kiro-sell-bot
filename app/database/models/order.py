@@ -98,6 +98,9 @@ class Order(TimestampMixin, Base):
     # after this order).
     thread_id: Mapped[int | None] = mapped_column(BigInteger)
     thread_last_event_id: Mapped[int | None] = mapped_column(BigInteger)
+    # The card at the top of that topic. Kept so it can be edited back into the truth on every
+    # action: posted once at PLACED, it would freeze the order at its least interesting moment.
+    thread_card_message_id: Mapped[int | None] = mapped_column(BigInteger)
 
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order")
 
