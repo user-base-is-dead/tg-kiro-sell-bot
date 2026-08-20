@@ -56,6 +56,7 @@ _ADMIN_COMMANDS = (
     "close",
     "broadcast_status",
     "done",
+    "refund",
     "reject",
 )
 

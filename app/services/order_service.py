@@ -587,6 +587,78 @@ async def decline_order(
     )
 
 
+@dataclass(frozen=True)
+class ParkedRefund:
+    """What a refund on a delivered order produced. `event` is None only when there was no money to
+    move, which is the one case the caller has to word differently."""
+
+    order: Order
+    event: OrderEvent | None
+    amount_minor: int
+
+
+async def refund_delivered_order(
+    session: AsyncSession,
+    *,
+    order_id: str,
+    amount_minor: int,
+    reason: str,
+    admin_telegram_id: int | None = None,
+) -> ParkedRefund:
+    """Park money back for an order that was delivered, without pretending it never happened.
+
+    This is the counterpart to `decline_order`, and the difference is the whole point: a decline is a
+    refusal to fulfil, so it cancels. Here the buyer got the product and is being paid back anyway —
+    the honest record is a COMPLETED order carrying a refund, not a CANCELLED one with a decline
+    reason on something that was delivered. Status, `completed_at` and the delivery event are all
+    left exactly as they are.
+
+    Shares `refund:<order.id>` with the decline path on purpose: whichever route pays first, the
+    other cannot pay again.
+    """
+    order = await OrderRepo(session).get_by_id(order_id)
+    if order is None or order.status is not OrderStatus.COMPLETED:
+        raise UserError("common.unknown_action")
+    # Refusing rather than topping up: `refund_amount_minor` is a single figure the settle screen
+    # pays out against, and a second park would silently overwrite the first.
+    if order.refund_state is not RefundState.NONE:
+        raise UserError("common.unknown_action")
+
+    amount_minor = max(0, min(int(amount_minor), order.total_minor))
+    if order.payment_txn_id is None or amount_minor == 0:
+        return ParkedRefund(order=order, event=None, amount_minor=0)
+
+    now = datetime.now(UTC)
+    reason = (reason or "").strip() or "Refunded by an admin"
+
+    txn = await wallet_service.credit_refund_balance(
+        session,
+        user_id=order.user_id,
+        amount_minor=amount_minor,
+        currency=order.currency,
+        idempotency_key=f"refund:{order.id}",
+        ref_type="order",
+        ref_id=order.id,
+    )
+    order.refund_state = RefundState.PARKED
+    order.refund_amount_minor = amount_minor
+    await session.flush()
+
+    event = await order_event_service.record(
+        session,
+        order,
+        OrderEventKind.REFUND_PARKED,
+        actor=OrderEventActor.ADMIN if admin_telegram_id else OrderEventActor.SYSTEM,
+        actor_telegram_id=admin_telegram_id,
+        amount_minor=amount_minor,
+        reason=reason,
+        reference=f"txn#{txn.id}",
+        at=now,
+    )
+    await session.flush()
+    return ParkedRefund(order=order, event=event, amount_minor=amount_minor)
+
+
 async def cancel_order(session: AsyncSession, *, order_id: str, reason: str) -> Order:
     """Back-compatible entry point: a decline with no admin attached.
 

@@ -132,6 +132,23 @@ def resolve_claim(warranty: Warranty, *, at: datetime | None = None) -> ClaimOut
     return ClaimOutcome(granted_seconds=granted, new_expires_at=warranty.expires_at)
 
 
+def refund_claim(warranty: Warranty, *, reason: str, at: datetime | None = None) -> None:
+    """`/refund`: the money went back, so the warranty is spent along with the sale.
+
+    VOID rather than EXPIRED, and deliberately so: EXPIRED says the cover ran its course, which
+    would leave the customer holding a warranty on something they were paid back for and let them
+    file a second claim on it. VOID is the one status the claim screen refuses outright, so the item
+    reads as settled from both sides. The remaining time is dropped rather than banked — there is no
+    product left for it to cover.
+    """
+    at = at or now_utc()
+    warranty.status = WarrantyStatus.VOID
+    warranty.claim_resolved_at = at
+    warranty.claim_notes = reason
+    warranty.claim_remaining_seconds = None
+    warranty.claim_deadline_at = None
+
+
 def reject_claim(warranty: Warranty, *, reason: str, at: datetime | None = None) -> ClaimOutcome:
     """`/reject` (and auto-rejection): drop the claim and fall back to the original timeline.
 

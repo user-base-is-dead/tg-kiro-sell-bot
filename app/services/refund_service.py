@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.database.models.order import FundingSource, Order, RefundState
 from app.database.models.order_event import OrderEvent, OrderEventActor, OrderEventKind
-from app.database.models.support import SupportTicket
+from app.database.models.support import SupportTicket, TicketStatus
 from app.database.models.user import User
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.support_repo import SupportRepo
@@ -247,6 +247,35 @@ async def _link_thread(
         reason="Refund thread opened" if created else "Refund posted into the buyer's open thread",
         reference=ticket.ticket_number,
     )
+
+
+async def adopt_thread(
+    session: AsyncSession,
+    order: Order,
+    ticket_id: int | None,
+    *,
+    admin_telegram_id: int | None = None,
+) -> SupportTicket | None:
+    """Hand a thread the buyer is already in over to this order's refund.
+
+    Used when a warranty claim is settled with money: the claim's own thread is where that
+    conversation lives, so rather than closing it and opening a second one somewhere else, it is
+    bound to the order. That binding is what makes it behave like every other refund thread — the
+    24-hour idle sweep leaves it alone, and an admin's /close is what ends it, once the money has
+    actually been sent.
+    """
+    if ticket_id is None:
+        return None
+    ticket = await SupportRepo(session).get_by_id(ticket_id)
+    if ticket is None:
+        return None
+    ticket.order_id = order.id
+    if ticket.status is TicketStatus.CLOSED:
+        ticket.status = TicketStatus.OPEN
+        ticket.closed_at = None
+        ticket.close_reason = None
+    await _link_thread(session, order, ticket, admin_telegram_id=admin_telegram_id, created=False)
+    return ticket
 
 
 async def notify_buyer(bot: Bot, buyer: User, text: str, *, invite_reply: bool = False) -> bool:

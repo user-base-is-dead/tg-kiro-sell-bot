@@ -5,16 +5,29 @@ import logging
 from aiogram import Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.callbacks import AdminRefundCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.keyboards.styles import SUCCESS, btn
 from app.database.models.order import Warranty, WarrantyStatus
 from app.database.models.user import User
+from app.database.repositories.audit_repo import AuditRepo
+from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.user_repo import UserRepo
 from app.database.repositories.warranty_repo import WarrantyRepo
+from app.services import order_service, order_thread_service, refund_service
 from app.services.support_service import close_claim_ticket
-from app.services.warranty_service import format_duration, now_utc, reject_claim, resolve_claim
+from app.services.warranty_service import (
+    format_duration,
+    now_utc,
+    refund_claim,
+    reject_claim,
+    resolve_claim,
+)
+from app.utils.errors import UserError
+from app.utils.money import format_minor
 from app.utils.time import as_utc
 
 logger = logging.getLogger(__name__)
@@ -108,6 +121,129 @@ async def approve_warranty_claim(message: Message, session: AsyncSession, user: 
     await message.answer(
         f"✅ Claim #{warranty.id} resolved. Granted {granted}, new expiry "
         f"{as_utc(warranty.expires_at):%Y-%m-%d %H:%M} UTC."
+    )
+
+
+@router.message(Command("refund"))
+async def refund_warranty_claim(message: Message, session: AsyncSession, user: User) -> None:
+    """`/refund <warranty_id> [reason]` — settle the claim with money instead of time.
+
+    The third answer to a claim, alongside /done and /reject: the item is not being replaced and the
+    claim is not being turned down — the buyer is being paid back. So three things move together and
+    the record says all three:
+
+    • the line's price is parked in their Refund Wallet, exactly where a declined order's money goes,
+      so the existing settle screen pays it out and nothing new has to be invented to send it;
+    • the warranty goes VOID — they were refunded for the item, so there is nothing left to cover and
+      the claim screen refuses a second claim on it;
+    • the order keeps its COMPLETED status and its delivery. It really was delivered; a refund is not
+      a reason to rewrite that.
+
+    The claim's thread deliberately stays OPEN, unlike /done and /reject. Money is parked and nobody
+    has been paid yet — a crypto buyer still has to send an address — so it becomes the order's refund
+    thread and an admin ends it with /close once it is settled.
+    """
+    args = (message.text or "").split(maxsplit=2)
+    if len(args) < 2:
+        await message.answer("Usage: /refund &lt;warranty_id&gt; [reason]")
+        return
+
+    reason = args[2].strip() if len(args) > 2 else "Refunded after a warranty claim."
+
+    warranty = await _load_claimed(message, session, args[1])
+    if warranty is None:
+        return
+
+    item = warranty.order_item
+    order = await OrderRepo(session).get_by_id(item.order_id) if item else None
+    if item is None or order is None:
+        await message.answer("That warranty has no order behind it — nothing to refund.")
+        return
+
+    # The line, not the whole order: a warranty covers one item, and an order with three items must
+    # not pay out three times for one broken one.
+    amount_minor = item.unit_price_minor * item.qty
+    try:
+        parked = await order_service.refund_delivered_order(
+            session,
+            order_id=order.id,
+            amount_minor=amount_minor,
+            reason=reason,
+            admin_telegram_id=user.telegram_id,
+        )
+    except UserError:
+        await message.answer(
+            f"Order <code>{order.order_number}</code> can't be refunded — it already carries a "
+            "refund, or it isn't a delivered order. Open it from 🛒 Orders to see where it stands."
+        )
+        return
+
+    refund_claim(warranty, reason=reason, at=now_utc())
+    await session.flush()
+
+    # The claim thread becomes the order's refund thread: it is where the buyer already is, it now
+    # survives the 24-hour idle sweep (order disputes are exempt), and /close in it ends the whole
+    # thing once the money is actually sent.
+    await refund_service.adopt_thread(
+        session, order, warranty.claim_ticket_id, admin_telegram_id=user.telegram_id
+    )
+    await AuditRepo(session).log(
+        actor_telegram_id=user.telegram_id,
+        action="warranty.refund",
+        target_type="warranty",
+        target_id=str(warranty.id),
+        metadata={"order_id": order.id, "amount_minor": parked.amount_minor},
+    )
+    # Reopen rather than sync: a delivered order's topic is closed, and the refund line has to land
+    # in the order's own history rather than silently going nowhere.
+    await order_thread_service.reopen(message.bot, session, order)
+
+    money = format_minor(parked.amount_minor, order.currency)
+    if parked.amount_minor == 0:
+        await _notify_customer(
+            message,
+            session,
+            warranty,
+            "🛡️ Your warranty claim has been <b>CLOSED WITH A REFUND</b>.\n\n"
+            f"Reason: {reason}\n\n"
+            "Nothing had been charged for this item, so there is nothing to pay back. The warranty "
+            "on it has ended.\n"
+            "Reply here if anything about this looks wrong.",
+        )
+        await message.answer(
+            f"✅ Claim #{warranty.id} refunded. Warranty is now VOID. Nothing was charged for this "
+            "item, so no money moved."
+        )
+        return
+
+    await _notify_customer(
+        message,
+        session,
+        warranty,
+        "💸 Your warranty claim has been <b>REFUNDED</b>.\n\n"
+        f"Reason: {reason}\n\n"
+        f"💰 <b>{money}</b> has been moved to your <b>Refund Balance</b>.\n"
+        "It's held separately from your spendable wallet — our team settles it with you rather than "
+        "turning it into shop credit on its own.\n\n"
+        "🛡️ The warranty on this item has ended, because you've been paid back for it.\n\n"
+        "✍️ <b>Type your message here</b> — this chat is still open with our team until the money "
+        "is settled.",
+    )
+    await message.answer(
+        f"✅ Claim #{warranty.id} refunded. <b>{money}</b> parked in their Refund Wallet, warranty "
+        f"is now VOID, order <code>{order.order_number}</code> stays delivered.\n\n"
+        "This thread stays open — run /close once the money is actually settled.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    btn(
+                        "💸 Settle refund now",
+                        AdminRefundCB(action="view", id=str(order.user_id), order_id=order.id).pack(),
+                        SUCCESS,
+                    )
+                ]
+            ]
+        ),
     )
 
 

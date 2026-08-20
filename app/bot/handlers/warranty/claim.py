@@ -32,7 +32,11 @@ def _claim_subject(warranty: Warranty) -> str:
         f"Warranty started: {as_utc(warranty.starts_at):%Y-%m-%d %H:%M} UTC\n"
         f"Warranty expires: {as_utc(warranty.expires_at):%Y-%m-%d %H:%M} UTC\n"
         f"Warranty id: {warranty.id}\n\n"
-        f"Resolve with /done {warranty.id} or /reject {warranty.id} [reason]."
+        f"Resolve it one of three ways:\n"
+        f"/done {warranty.id} — replaced, hand back the warranty time\n"
+        f"/refund {warranty.id} [reason] — pay them back instead; the warranty ends and this "
+        f"thread stays open until the money is settled\n"
+        f"/reject {warranty.id} [reason] — turned down, original warranty carries on"
     )
 
 

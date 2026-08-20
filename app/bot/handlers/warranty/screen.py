@@ -15,8 +15,15 @@ from app.utils.pagination import Page
 
 router = Router(name="warranty.screen")
 
-_STATUS_EMOJI = {"ACTIVE": "🟢", "EXPIRED": "🔴", "CLAIMED": "🔵", "VOID": "⚫"}
-_STATUS_LABEL = {"ACTIVE": "ACTIVE", "EXPIRED": "EXPIRED", "CLAIMED": "UNDER REVIEW", "VOID": "VOID"}
+_STATUS_EMOJI = {"ACTIVE": "🟢", "EXPIRED": "🔴", "CLAIMED": "🔵", "VOID": "💸"}
+# VOID is only ever reached by refunding a claim, so it says what actually happened rather than
+# leaving the customer to work out what a void warranty means.
+_STATUS_LABEL = {
+    "ACTIVE": "ACTIVE",
+    "EXPIRED": "EXPIRED",
+    "CLAIMED": "UNDER REVIEW",
+    "VOID": "REFUNDED",
+}
 PAGE_SIZE = 12
 
 EMPTY_TEXT = (
