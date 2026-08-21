@@ -42,6 +42,23 @@ async def _identify_sender(session, from_address: str | None) -> int | None:
     return owners[0] if len(owners) == 1 else None
 
 
+async def _spent_tx_hashes(session, hashes: list[str]) -> set[str]:
+    """Of these transfers, the ones that have already paid for an invoice.
+
+    A transfer is spent exactly once. That has to be checked against the database and not just
+    against what this run has already done, because `fetch_recent_transfers` deliberately re-reads a
+    ~15 minute window of the chain every 30 seconds: the same transfer is offered to this job
+    dozens of times, and only the first offer must be worth anything.
+    """
+    if not hashes:
+        return set()
+    wanted = {h.lower() for h in hashes}
+    result = await session.execute(
+        select(CryptoPayment.tx_hash).where(CryptoPayment.tx_hash.in_(wanted))
+    )
+    return {h.lower() for h in result.scalars() if h}
+
+
 async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
     """Background job to check blockchain for pending payments."""
     monitor = BlockchainMonitor()
@@ -64,10 +81,18 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
         if not pending:
             return
 
+        # Transfers that already paid for something, on an earlier run of this job. Without this, a
+        # buyer who opened two invoices — pressing 💎 Pay with Crypto twice, or topping up and then
+        # buying — and paid once got credited twice: the first run matched their transfer to invoice
+        # A on its exact sub-cent tail, and 30 seconds later the same transfer was still on chain,
+        # invoice B was still PENDING, and B's tail is well inside the ±$0.03 `near` window. One
+        # payment, two credits, and enough balance to place the same order twice.
+        spent = await _spent_tx_hashes(session, [tx["hash"] for tx in transfers])
+
         processed_txs = set()
 
         for tx in transfers:
-            if tx["hash"] in processed_txs:
+            if tx["hash"] in processed_txs or tx["hash"].lower() in spent:
                 continue
 
             # Two tiers, kept apart. `exact` is the buyer who sent the sub-cent tail we gave them —
@@ -141,7 +166,12 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                     amount_minor=payment.product_amount_minor,
                     currency=payment.currency,
                     type_=TxnType.TOPUP,
-                    idempotency_key=f"crypto:{payment.id}:{tx['hash']}",
+                    # Keyed on the transfer, NOT on the invoice it was matched to. The invoice id
+                    # used to be in here, which made "the same money, credited against a different
+                    # invoice" a brand new key the ledger was happy to honour — the exact shape of
+                    # the double credit. A transaction hash is unique on chain and the money behind
+                    # it can only be spent once, so it is the honest key.
+                    idempotency_key=f"crypto:tx:{tx['hash'].lower()}",
                     ref_type="crypto_payment",
                     ref_id=str(payment.id),
                 )
@@ -149,7 +179,10 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                 # Mark payment as confirmed
                 payment.status = "CONFIRMED"
                 payment.actual_amount = str(tx["value"])
-                payment.tx_hash = tx["hash"]
+                # Lower-cased for the same reason as `from_address`: this column is what
+                # `_spent_tx_hashes` reads back to decide a transfer is spent, and a hash that
+                # round-trips in a different case would read as a different, unspent transfer.
+                payment.tx_hash = tx["hash"].lower()
                 # This job is the only path that confirms a payment in practice, and it never used to
                 # stamp the time — so `confirmed_at` was NULL on every real payment, and anything
                 # ordering confirmed invoices by when they landed had nothing to order by. Order
@@ -173,6 +206,9 @@ async def check_crypto_payments(sessionmaker: async_sessionmaker) -> None:
                 continue
 
             processed_txs.add(tx["hash"])
+            # Spent from here on, including on every later run — the row above says so, and this
+            # keeps the in-memory answer in step with it for the rest of this batch.
+            spent.add(tx["hash"].lower())
             pending.pop(payment_id, None)
 
         await session.commit()
