@@ -34,7 +34,7 @@ async def test_credit_then_debit_balance_matches_sum_of_transactions(sqlite_sess
 
     async with sqlite_sessionmaker() as session:
         wallet = await WalletRepo(session).get_or_create(user_id, currency="USD")
-        txns = await WalletRepo(session).list_transactions(wallet.id, limit=50)
+        txns = await WalletRepo(session).list_main_transactions(wallet.id, limit=50)
         assert wallet.balance_minor == 600
         assert sum(t.amount_minor for t in txns) == wallet.balance_minor
 

@@ -39,6 +39,7 @@ from app.bot.handlers.user.help import router as help_router
 from app.bot.handlers.user.menu_placeholders import router as menu_placeholders_router
 from app.bot.handlers.user.profile import router as profile_router
 from app.bot.handlers.user.refunds import router as refunds_router
+from app.bot.handlers.user.wallet_history import router as wallet_history_router
 from app.bot.handlers.user.start import router as start_router
 from app.bot.handlers.warranty.claim import router as warranty_claim_router
 from app.bot.handlers.warranty.screen import router as warranty_router
@@ -92,6 +93,7 @@ def _include_routers(dp: Dispatcher) -> None:
     dp.include_router(payments_topup_crypto_router)
     dp.include_router(profile_router)
     dp.include_router(refunds_router)
+    dp.include_router(wallet_history_router)
     dp.include_router(warranty_router)
     dp.include_router(warranty_claim_router)
     dp.include_router(gifts_redeem_router)

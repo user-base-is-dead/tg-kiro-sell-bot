@@ -19,6 +19,7 @@ USER_COMMANDS = [
     BotCommand(command="refer", description="Your referral link"),
     BotCommand(command="warranty", description="Warranty status"),
     BotCommand(command="topup", description="Top up your balance"),
+    BotCommand(command="wallet", description="Your wallet history"),
     BotCommand(command="profile", description="Your account"),
     BotCommand(command="help", description="Help"),
 ]

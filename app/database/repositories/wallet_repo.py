@@ -38,14 +38,36 @@ class WalletRepo:
         )
         return list(result.scalars().all())
 
-    async def list_transactions(self, wallet_id: int, limit: int = 20) -> list[WalletTransaction]:
+    async def list_main_transactions(
+        self, wallet_id: int, *, limit: int = 20, offset: int = 0
+    ) -> list[WalletTransaction]:
+        """The spendable balance's own ledger — what the buyer sees on 📒 Wallet History.
+
+        Only the MAIN account. The refund side has its own screen, and a row shown on both would be
+        counted twice by anyone adding them up. `id` breaks ties on `created_at` because the two
+        halves of a refund move are written in the same instant, and without it they can come back
+        in either order — so the same page reads differently each time it is opened.
+        """
         result = await self._session.execute(
             select(WalletTransaction)
-            .where(WalletTransaction.wallet_id == wallet_id)
-            .order_by(WalletTransaction.created_at.desc())
+            .where(
+                WalletTransaction.wallet_id == wallet_id,
+                WalletTransaction.account == TxnAccount.MAIN,
+            )
+            .order_by(WalletTransaction.created_at.desc(), WalletTransaction.id.desc())
             .limit(limit)
+            .offset(offset)
         )
         return list(result.scalars().all())
+
+    async def count_main_transactions(self, wallet_id: int) -> int:
+        result = await self._session.execute(
+            select(func.count(WalletTransaction.id)).where(
+                WalletTransaction.wallet_id == wallet_id,
+                WalletTransaction.account == TxnAccount.MAIN,
+            )
+        )
+        return int(result.scalar_one())
 
     async def list_refund_transactions(self, wallet_id: int, limit: int = 20) -> list[WalletTransaction]:
         """Only the Refund Wallet side of the ledger — what arrived from declined orders and what an

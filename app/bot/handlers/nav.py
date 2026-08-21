@@ -13,6 +13,7 @@ from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
 from app.bot.handlers.user.profile import render_profile_screen
 from app.bot.handlers.user.refunds import render_refunds
+from app.bot.handlers.user.wallet_history import render_wallet_history
 from app.bot.keyboards.main_menu import main_inline_keyboard
 from app.bot.texts import NO_PREVIEW, home_body
 from app.database.models.user import User
@@ -80,6 +81,17 @@ async def on_nav(
 
     if target == "refunds":
         text, markup = await render_refunds(session, user)
+        await query.message.edit_text(text, reply_markup=markup)
+        await query.answer()
+        return
+
+    # "wallet" is page 1; "wallet-3" is page 3. Same shape as "cat-<id>" below — the page rides in
+    # the nav token rather than in a callback of its own, because paging is the only thing this
+    # screen does and a whole callback factory for one integer earns nothing.
+    if target == "wallet" or target.startswith("wallet-"):
+        _, _, page_raw = target.partition("-")
+        page_num = int(page_raw) if page_raw.isdigit() else 1
+        text, markup = await render_wallet_history(session, user, page_num)
         await query.message.edit_text(text, reply_markup=markup)
         await query.answer()
         return

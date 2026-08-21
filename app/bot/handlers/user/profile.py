@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import NavCB
 from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.common import with_nav
-from app.bot.keyboards.styles import SUCCESS, btn
+from app.bot.keyboards.styles import PRIMARY, SUCCESS, btn
 from app.core.config import get_settings
 from app.database.models.order import OrderStatus
 from app.database.models.user import User
@@ -65,6 +65,11 @@ async def render_profile_screen(
     has_history = bool(await OrderRepo(session).list_refunded_for_user(user.id, limit=1))
 
     rows = []
+    # Always drawn, unlike 💸 My Refunds below. The balance on this screen is a bare number, and the
+    # door to what is behind it has to be there before the user has a reason to look for it — money
+    # an admin credits by hand arrives with no announcement, so this button is the only way they can
+    # ever find out where it came from.
+    rows.append([btn(t("menu.wallet", user.locale), NavCB(target="wallet").pack(), PRIMARY)])
     if wallet.refund_balance_minor or has_history:
         label = t("menu.refunds", user.locale)
         if wallet.refund_balance_minor:
