@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +45,25 @@ async def list_open(message, session: AsyncSession) -> None:
     )
 
 
+async def _close_order_topic(message: Message) -> None:
+    """Retire an order's log thread by hand.
+
+    The reply goes out before the close, because afterwards the topic is read-only and the
+    confirmation would have nowhere to land. Best-effort on the close itself: a topic that is already
+    closed, or gone, is the state the admin asked for either way.
+    """
+    await message.reply(
+        "🔒 Closing this order's thread. Nothing was talking here — the order's log stays on the "
+        "card above, and settling any parked refund reopens it."
+    )
+    try:
+        await message.bot.close_forum_topic(
+            chat_id=message.chat.id, message_thread_id=message.message_thread_id
+        )
+    except TelegramAPIError:
+        pass
+
+
 # Registered on the admin router, which main.py includes BEFORE the relay router. That ordering is
 # the whole point: aiogram stops at the first matching handler, so "/close" is consumed here and
 # never reaches group_relay — which would otherwise mirror the literal text "/close" to the user
@@ -67,15 +87,15 @@ async def close_from_topic(message: Message, session: AsyncSession, user) -> Non
         message.message_thread_id, message.chat.id, is_support_group=in_support
     )
     if ticket is None:
-        # An order's topic starts life as a log, with nobody to close it on. It becomes closeable
-        # only once a decline connects the buyer to it; before that there is no conversation, and a
-        # delivered order closes its own topic without anybody being told anything.
-        await message.reply(
-            "This order thread is still just its log — nothing to close. It becomes a conversation "
-            "when the order is declined, and closes itself when the order is delivered."
-            if in_orders
-            else "No ticket is attached to this topic."
-        )
+        # An order's topic is a log, not a conversation — a decline no longer connects the buyer to
+        # it, so there is usually no ticket here to close. That used to be answered with "nothing to
+        # close", which left the topic of every declined order open forever: its money is parked, so
+        # `order_thread_service.sync` deliberately won't close it either. /close is the manual way,
+        # and closing the topic is the whole of what it means here.
+        if in_orders:
+            await _close_order_topic(message)
+        else:
+            await message.reply("No ticket is attached to this topic.")
         return
     if ticket.status == TicketStatus.CLOSED:
         await message.reply(f"{ticket.ticket_number} is already closed.")

@@ -3,11 +3,9 @@ from __future__ import annotations
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import ForceReply
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -19,7 +17,6 @@ from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
 from app.database.repositories.wallet_repo import WalletRepo
-from app.locales.i18n import t
 from app.services import order_event_service, wallet_service
 from app.utils.errors import UserError
 from app.utils.money import format_minor
@@ -30,21 +27,6 @@ logger = logging.getLogger(__name__)
 REFUND_CATEGORY = "Refund"
 
 
-@dataclass(frozen=True)
-class RefundThread:
-    """The conversation a refund will be settled in.
-
-    `created` distinguishes a fresh thread from one the buyer already had open. Both are correct
-    outcomes — see `open_or_reuse_thread` for why reusing is not a shortcut — but the admin is told
-    which, because "a chat has been opened" and "your notice was added to their existing chat" are
-    different things to walk into.
-    """
-
-    ticket: SupportTicket | None
-    created: bool
-    reached_staff: bool
-
-
 def _crypto_note(order: Order, tx_hash: str | None) -> str:
     lines = [
         "💎 <b>You paid for this on chain (USDT, BNB Smart Chain).</b>",
@@ -53,7 +35,13 @@ def _crypto_note(order: Order, tx_hash: str | None) -> str:
     if tx_hash:
         lines.append(f"Your payment: <code>{escape_html(tx_hash)}</code>")
     lines.append("")
-    lines.append("👉 <b>Reply here with the BEP-20 (BSC) address you want the refund sent to.</b>")
+    # Deliberately NOT "reply here". A decline no longer opens a thread on the buyer's behalf, so a
+    # reply to this DM has no open ticket to land in and `dm_relay` drops it without a word — which
+    # is the worst possible place to lose a message, since this one carries the address the refund
+    # cannot be sent without.
+    lines.append(
+        "👉 <b>Open 💬 Live Chat and send us the BEP-20 (BSC) address you want the refund sent to.</b>"
+    )
     return "\n".join(lines)
 
 
@@ -64,7 +52,6 @@ def buyer_notice(
     refunded_minor: int,
     refund_event: OrderEvent | None,
     decline_event: OrderEvent,
-    ticket: SupportTicket | None,
     tx_hash: str | None = None,
 ) -> str:
     """What the buyer reads. Written so that nothing they will ask next is missing from it: why, how
@@ -91,17 +78,15 @@ def buyer_notice(
     if order.funding_source is FundingSource.CRYPTO:
         lines += [_crypto_note(order, tx_hash), ""]
 
-    if ticket is not None:
-        # The buyer does not have to open anything, find anything, or press anything: the thread is
-        # already live and this chat is the thread. Said in the imperative because the previous
-        # wording ("a ticket is open — reply here") left people looking for a ticket to open.
-        lines += [
-            "✍️ <b>Type your message here.</b>",
-            f"Whatever you send in this chat goes straight to our team on ticket "
-            f"<code>{ticket.ticket_number}</code> — photos and screenshots included. No need to open "
-            "a ticket; this one is already open for you.",
-            "",
-        ]
+    # A decline no longer opens a thread for them. It used to, and the thread it opened was the one
+    # conversation they were allowed — so a buyer who wanted to talk about something else was locked
+    # out until an admin closed it, and an admin who declined an order for somebody already in a Live
+    # Chat had the refund quietly filed into that unrelated chat instead. Pointing at Live Chat costs
+    # the buyer one tap and keeps them in charge of whether there is a conversation at all.
+    lines += [
+        "💬 <b>Want to talk about this?</b> Open 💬 Live Chat from the menu and quote either ID below.",
+        "",
+    ]
 
     lines.append(f"🔖 Decline ID: <code>{decline_event.event_number}</code>")
     if refund_event is not None:
@@ -111,129 +96,18 @@ def buyer_notice(
     return "\n".join(lines)
 
 
-def _thread_subject(order: Order, *, reason: str, refunded_minor: int, refund_event: OrderEvent | None) -> str:
-    """The opening message of the refund thread — written for staff, who need to be able to settle it
-    without opening the admin panel first."""
-    lines = [
-        f"Refund — order {order.order_number}",
-        "",
-        f"Declined reason: {reason}",
-        f"Amount parked in Refund Wallet: {format_minor(refunded_minor, order.currency)}",
-        f"Paid by: {'crypto (USDT, on chain)' if order.funding_source is FundingSource.CRYPTO else 'wallet balance'}",
-    ]
-    if refund_event is not None:
-        lines.append(f"Refund ID: {refund_event.event_number}")
-    if order.funding_source is FundingSource.CRYPTO:
-        lines += [
-            "",
-            "The buyer has been asked for a BEP-20 address. Send the payout, then record it on the "
-            "order's Refund Wallet screen so the balance matches what actually went out.",
-        ]
-    else:
-        lines += [
-            "",
-            "Settle it on the order's Refund Wallet screen — move it into their spendable wallet, or "
-            "record a payout if you send it another way.",
-        ]
-    return "\n".join(lines)
-
-
-async def open_or_reuse_thread(
-    bot: Bot,
-    session: AsyncSession,
-    *,
-    order: Order,
-    buyer: User,
-    reason: str,
-    refunded_minor: int,
-    refund_event: OrderEvent | None,
-    admin_telegram_id: int | None = None,
-) -> RefundThread:
-    """Get the refund in front of staff, in a thread the buyer can reply into.
-
-    First choice is the order's OWN topic in ORDERS_GROUP_ID: it already carries what was bought,
-    what was paid, why it was declined and how much is parked, so settling the refund there means
-    staff never have to reconstruct any of it — and the thread simply stays open instead of closing
-    the way a delivered order's does. The buyer is connected to that same thread, so their replies
-    land under the history rather than in a separate ticket that repeats none of it.
-
-    Reuses an existing open thread rather than opening a second one. That is not a shortcut: a user is
-    allowed exactly one live conversation (see `support_service.active_thread`), because their replies
-    can only be relayed into one of them — a second thread would be a channel that looks open from
-    their side and silently goes nowhere. So if they already have a ticket, or a warranty claim under
-    review, the refund notice is posted into that thread.
-
-    Falls back to an ordinary support ticket when no order thread can be had (ORDERS_GROUP_ID unset,
-    or the group unreachable), because a refund nobody is told about is the one outcome that must not
-    happen.
-
-    Best-effort throughout. A refund that is already parked must not be rolled back because a group is
-    misconfigured; `reached_staff` reports what actually happened so the admin is never told a chat
-    opened when none did.
-    """
-    from app.services import order_thread_service, support_service
-
-    subject = _thread_subject(order, reason=reason, refunded_minor=refunded_minor, refund_event=refund_event)
-    existing = await SupportRepo(session).get_open_for_user(buyer.id)
-
-    if existing is not None:
-        reached = await _post_into_thread(bot, session, ticket=existing, body=subject)
-        await _link_thread(session, order, existing, admin_telegram_id=admin_telegram_id, created=False)
-        return RefundThread(existing, created=False, reached_staff=reached)
-
-    dispute = await order_thread_service.open_dispute(bot, session, order=order, buyer=buyer, body=subject)
-    if dispute is not None:
-        await _link_thread(session, order, dispute.ticket, admin_telegram_id=admin_telegram_id, created=True)
-        return RefundThread(dispute.ticket, created=True, reached_staff=dispute.reached_staff)
-
-    ticket, reached_staff = await support_service.create_ticket(
-        bot,
-        session,
-        user=buyer,
-        category=REFUND_CATEGORY,
-        subject=subject,
-        support_group_id=get_settings().support_group_id,
-    )
-    await _link_thread(session, order, ticket, admin_telegram_id=admin_telegram_id, created=True)
-    return RefundThread(ticket, created=True, reached_staff=reached_staff)
-
-
-async def _post_into_thread(bot: Bot, session: AsyncSession, *, ticket: SupportTicket, body: str) -> bool:
-    """Drop a staff-side note into an existing ticket's topic. Recorded as a SYSTEM message so the
-    thread's own transcript explains where the refund came from.
-
-    The destination comes off the ticket: it may be an ordinary support topic or an order thread in
-    ORDERS_GROUP_ID, and posting to the wrong group would land in a topic that does not exist there.
-    """
-    from app.services import support_service
-
-    await SupportRepo(session).add_message(
-        ticket_id=ticket.id,
-        author_type="SYSTEM",
-        author_telegram_id=0,
-        content=body,
-        created_at=datetime.now(UTC),
-    )
-    group_id = support_service.ticket_group_id(ticket)
-    if group_id is None:
-        logger.error("No group for ticket %s — the refund note reached nobody.", ticket.ticket_number)
-        return False
-    try:
-        await bot.send_message(group_id, escape_html(body), message_thread_id=ticket.topic_id)
-        return True
-    except TelegramAPIError as exc:
-        logger.error("Couldn't post refund note into %s (%s)", ticket.ticket_number, exc)
-        return False
-
-
 async def _link_thread(
     session: AsyncSession,
     order: Order,
     ticket: SupportTicket | None,
     *,
     admin_telegram_id: int | None,
-    created: bool,
 ) -> None:
+    """Record on the order which thread its refund is being settled in.
+
+    Only `adopt_thread` reaches here now, so the thread is always one the buyer was already in — a
+    decline opens nothing on their behalf any more.
+    """
     if ticket is None:
         return
     order.refund_ticket_id = ticket.id
@@ -244,7 +118,7 @@ async def _link_thread(
         OrderEventKind.TICKET_OPENED,
         actor=OrderEventActor.ADMIN if admin_telegram_id else OrderEventActor.SYSTEM,
         actor_telegram_id=admin_telegram_id,
-        reason="Refund thread opened" if created else "Refund posted into the buyer's open thread",
+        reason="Refund bound to the buyer's existing thread",
         reference=ticket.ticket_number,
     )
 
@@ -274,27 +148,22 @@ async def adopt_thread(
         ticket.status = TicketStatus.OPEN
         ticket.closed_at = None
         ticket.close_reason = None
-    await _link_thread(session, order, ticket, admin_telegram_id=admin_telegram_id, created=False)
+    await _link_thread(session, order, ticket, admin_telegram_id=admin_telegram_id)
     return ticket
 
 
-async def notify_buyer(bot: Bot, buyer: User, text: str, *, invite_reply: bool = False) -> bool:
+async def notify_buyer(bot: Bot, buyer: User, text: str) -> bool:
     """Best-effort DM. A blocked bot must not undo a refund that is already parked — the money is in
-    their balance and the ticket is in the group either way.
+    their balance either way.
 
-    `invite_reply` puts "Type your message here…" in the input box itself. The notice already says to
-    type, but the box is where they will actually look, and a dispute they have to be told twice about
-    is one they open a second ticket for.
+    No ForceReply any more. It used to put "Type your message here…" in the input box, which was
+    honest while a decline opened a thread for them to type into; now that it doesn't, an input box
+    inviting a reply would be pointing at nothing.
     """
     if buyer.chat_id is None:
         return False
-    markup = (
-        ForceReply(input_field_placeholder=t("support.dispute_placeholder", buyer.locale)[:64])
-        if invite_reply
-        else None
-    )
     try:
-        await bot.send_message(buyer.chat_id, text, reply_markup=markup)
+        await bot.send_message(buyer.chat_id, text)
         return True
     except TelegramAPIError as exc:
         logger.warning("Couldn't tell user %s their order was declined (%s)", buyer.telegram_id, exc)

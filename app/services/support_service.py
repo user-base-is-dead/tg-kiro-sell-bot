@@ -20,10 +20,6 @@ from app.utils.text import escape_html
 
 logger = logging.getLogger(__name__)
 
-# The category every order dispute is filed under. One constant so the admin queue, the buyer's
-# ticket list and the thread header can never disagree about what this kind of ticket is called.
-ORDER_DISPUTE_CATEGORY = "Order Dispute"
-
 
 async def _send_media(
     bot: Bot,
@@ -409,84 +405,3 @@ async def announce_closure(bot: Bot, session: AsyncSession, ticket: SupportTicke
             logger.warning("Couldn't tell user about closure of %s (%s)", ticket.ticket_number, exc)
 
     await _close_topic(bot, ticket)
-
-
-async def create_order_dispute_ticket(
-    bot: Bot,
-    session: AsyncSession,
-    *,
-    user: User,
-    order_id: str,
-    order_number: str,
-    group_chat_id: int,
-    topic_id: int,
-    subject: str,
-    body: str,
-) -> NewTicket:
-    """Turn an order's existing log topic into a live conversation with the buyer.
-
-    Unlike `create_ticket` this opens no topic: the order already has one, and the whole point is
-    that the refund is argued where the order's history is, rather than in a second thread that
-    repeats none of it. So the ticket is bound to that topic (`group_chat_id` + `topic_id`) and the
-    relay carries the buyer's messages into it.
-
-    `reached_staff` is false when the group refused the post — the ticket row still exists, but
-    nobody was actually told, and the caller must not tell the buyer to start typing on the strength
-    of a row alone.
-    """
-    now = datetime.now(UTC)
-    # The ticket number IS the order number. A dispute is not a separate thing the buyer has to
-    # track — it is this order, being argued — and quoting one id for the purchase and another for
-    # the conversation about it made people ask which one we wanted. It also means the id they are
-    # given is already searchable from the Orders screen.
-    existing = await SupportRepo(session).get_dispute_for_order(order_id)
-    if existing is not None:
-        # Same order, declined or refunded a second time: reopen the conversation it already had
-        # rather than mint a duplicate, which the unique ticket number would refuse anyway.
-        ticket = existing
-        ticket.status = TicketStatus.OPEN
-        ticket.closed_at = None
-        ticket.close_reason = None
-        ticket.subject = subject[:256]
-        ticket.topic_id = topic_id
-        ticket.group_chat_id = group_chat_id
-    else:
-        ticket = SupportTicket(
-            ticket_number=order_number[:24],
-            user_id=user.id,
-            category=ORDER_DISPUTE_CATEGORY,
-            subject=subject[:256],
-            status=TicketStatus.OPEN,
-            topic_id=topic_id,
-            group_chat_id=group_chat_id,
-            order_id=order_id,
-            opened_at=now,
-        )
-        session.add(ticket)
-    await session.flush()
-
-    await SupportRepo(session).add_message(
-        ticket_id=ticket.id, author_type="SYSTEM", author_telegram_id=0, content=body, created_at=now
-    )
-
-    header = (
-        f"🎫 <b>{ticket.ticket_number}</b> — the buyer is now connected to this thread\n"
-        f"📂 {ORDER_DISPUTE_CATEGORY} · the ticket id is the order id\n\n"
-        f"{_identity_block(user)}\n\n"
-        f"{escape_html(body)}\n\n"
-        "💬 Anything you write here reaches them, and anything they write lands here. "
-        "Run <code>/close</code> in this topic when it's settled."
-    )
-    try:
-        await bot.send_message(group_chat_id, header, message_thread_id=topic_id)
-    except TelegramAPIError as exc:
-        logger.error(
-            "Order dispute %s created but the order thread (group=%s topic=%s) refused it (%s)",
-            ticket.ticket_number,
-            group_chat_id,
-            topic_id,
-            exc,
-        )
-        return await _settle_undelivered(session, ticket, await _notify_admins(bot, f"⚠️ {header}"))
-
-    return NewTicket(ticket, True)

@@ -90,7 +90,6 @@
     "blocked_by_ticket": "You already have an open ticket ({reference}). Just reply here to continue it — we handle one at a time, and you can open a new one once this is closed.",
     "blocked_by_warranty": "Your warranty claim ({reference}) is still under review. We handle one request at a time — once it's resolved you can open a new ticket.",
     "blocked_by_order": "Your order dispute ({reference}) is still open — just type your message here and it goes straight to the team handling it. We keep it to one conversation at a time, so nothing else opens until they close it.",
-    "dispute_placeholder": "Type your message here…",
     "dispute_closed_notice": "🔒 Your order dispute has been closed by our team.\n\n💬 Live Chat is open to you again — if anything about the refund is still unresolved, open a ticket there and we'll pick it up."
   },
   "referral": {

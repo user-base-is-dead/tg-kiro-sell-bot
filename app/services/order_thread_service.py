@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -12,8 +11,7 @@ from app.core.config import get_settings
 from app.database.models.catalog import FulfillmentMode
 from app.database.models.order import Delivery, FundingSource, Order, OrderStatus, RefundState
 from app.database.models.order_event import OrderEvent, OrderEventKind
-from app.database.models.support import SupportTicket, TicketStatus
-from app.database.models.user import User
+from app.database.models.support import TicketStatus
 from app.database.repositories.order_event_repo import OrderEventRepo
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.product_repo import ProductRepo
@@ -306,72 +304,3 @@ async def dispute_is_open(session: AsyncSession, order: Order) -> bool:
     if ticket is None or ticket.order_id != order.id:
         return False
     return ticket.status in (TicketStatus.OPEN, TicketStatus.PENDING)
-
-
-@dataclass(frozen=True)
-class Dispute:
-    """A dispute now running in the order's own topic. `reached_staff` is false when the group
-    refused the post — the ticket exists, but nobody was told, so the buyer must not be invited to
-    start typing into it."""
-
-    ticket: SupportTicket
-    reached_staff: bool
-
-
-async def open_dispute(
-    bot: Bot, session: AsyncSession, *, order: Order, buyer: User, body: str
-) -> Dispute | None:
-    """Turn this order's log thread into a conversation the buyer is connected to.
-
-    Called when an order is cancelled or refunded. The thread already holds everything staff need —
-    what was bought, what was paid, why it was declined, how much is parked — so the refund is
-    settled there instead of in a fresh support ticket that repeats none of it. It stays open (see
-    `sync`) until an admin runs /close.
-
-    Returns None when there is no thread to host it (no ORDERS_GROUP_ID, or the group refused to
-    open a topic), which is the caller's signal to fall back to an ordinary support ticket. Never
-    raises: a refund that is already parked must not be undone by a misconfigured group.
-    """
-    from app.services import support_service
-
-    group_id = get_settings().orders_group_id
-    if group_id is None:
-        return None
-
-    try:
-        # Brings the thread into existence if this order never had one, and catches its log up so the
-        # buyer's first message does not arrive above the decline that prompted it. Reopen first: the
-        # order may have been delivered, which closed the topic.
-        if order.thread_id is not None:
-            try:
-                await bot.reopen_forum_topic(chat_id=group_id, message_thread_id=order.thread_id)
-            except TelegramAPIError:
-                pass
-        await sync(bot, session, order)
-        if order.thread_id is None:
-            return None
-        # `sync` closes the topic of a dead order, and at this point there is no dispute ticket yet
-        # for it to know better — so it is reopened here, before anybody is told to type into it.
-        try:
-            await bot.reopen_forum_topic(chat_id=group_id, message_thread_id=order.thread_id)
-        except TelegramAPIError:
-            pass
-
-        ticket, reached_staff = await support_service.create_order_dispute_ticket(
-            bot,
-            session,
-            user=buyer,
-            order_id=order.id,
-            order_number=order.order_number,
-            group_chat_id=group_id,
-            topic_id=order.thread_id,
-            subject=f"Order dispute — {order.order_number}",
-            body=body,
-        )
-        return Dispute(ticket, reached_staff)
-    except TelegramAPIError as exc:
-        logger.warning("Couldn't open the dispute thread for %s (%s)", order.order_number, exc)
-        return None
-    except Exception as exc:  # noqa: BLE001 — a refund is already parked; never fail it over a group
-        logger.error("Unexpected failure opening the dispute thread for %s: %s", order.order_number, exc)
-        return None
