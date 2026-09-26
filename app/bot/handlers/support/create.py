@@ -22,6 +22,14 @@ from app.services.support_service import active_thread, create_ticket
 router = Router(name="support.create")
 
 _CATEGORIES = ["General", "Billing", "Technical", "Order Issue"]
+# What the buyer reads on each topic button. The category value itself is what gets stored on the
+# ticket and shown to staff, so it stays exactly as it was — only the label is friendlier.
+_CATEGORY_LABEL = {
+    "General": "💬 General question",
+    "Billing": "💳 Payment or wallet",
+    "Technical": "🛠️ Something isn't working",
+    "Order Issue": "📦 Problem with an order",
+}
 
 
 def _menu_keyboard(locale: str) -> InlineKeyboardMarkup:
@@ -63,7 +71,10 @@ async def start_create(query: CallbackQuery, session: AsyncSession, user: User) 
         )
         return
 
-    rows = [[btn(cat, SupportCB(action="create", category=cat).pack(), PRIMARY)] for cat in _CATEGORIES]
+    rows = [
+        [btn(_CATEGORY_LABEL.get(cat, cat), SupportCB(action="create", category=cat).pack(), PRIMARY)]
+        for cat in _CATEGORIES
+    ]
     await query.message.edit_text(
         t("support.choose_category", user.locale),
         reply_markup=with_nav(rows, user.locale, back_target="support"),
@@ -98,7 +109,7 @@ async def cancel_create(message: Message, state: FSMContext, session: AsyncSessi
 async def receive_subject(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
     subject = (message.text or "").strip()
     if not subject:
-        await message.answer("Please describe your issue in text, or /cancel:")
+        await message.answer("✍️ Please describe the problem in text, or send /cancel:")
         return
 
     data = await state.get_data()
@@ -112,10 +123,10 @@ async def receive_subject(message: Message, state: FSMContext, session: AsyncSes
         subject=subject,
         support_group_id=get_settings().support_group_id,
     )
-    # Never a bare "✅ opened" on the strength of the database row alone — if nobody was reachable,
-    # the user is waiting for a reply that is not coming, and has no way to tell. The ticket is
-    # closed again in that case (see `_settle_undelivered`), so this really is "try again", not a
-    # brush-off: there is nothing left holding their slot.
+    # Never a bare "✅ opened" on the strength of the database row alone — if the support group is
+    # unreachable, every reply the user types would bounce, so they are told now rather than on their
+    # second message. The ticket is closed again in that case (see `_settle_undelivered`), so this
+    # really is "try again", not a brush-off: there is nothing left holding their slot.
     if not reached_staff:
         await message.answer(t("support.system_unavailable", user.locale))
         return

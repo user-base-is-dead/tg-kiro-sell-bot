@@ -7,6 +7,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 
 from app.bot.filters.is_admin import is_admin_user
+from app.bot.filters.menu_button import menu_labels
 from app.bot.states.ticket_form import TicketForm
 from app.database.models.user import UserStatus
 from app.locales.i18n import t
@@ -24,10 +25,7 @@ _ALLOWED_MENU_KEYS = ("menu.start", "menu.products", "menu.support")
 # list, pressing 💳 Top Up while suspended would sail past the middleware and open top-up.
 _BLOCKED_MENU_KEYS = (
     "menu.orders",
-    "menu.profile",
-    "menu.topup",
-    "menu.gift",
-    "menu.refer",
+    "menu.wallet",
     "menu.warranty",
     "menu.admin_panel",
 )
@@ -37,8 +35,8 @@ _BLOCKED_MENU_KEYS = (
 _ALLOWED_NAV_TARGETS = {"home", "categories"}
 
 # FSM states a suspended account may still answer into. Only the support ticket form: everything
-# else (top-up amount, gift code, checkout) belongs to an action they are not allowed to take, and
-# a state left over from before the ban must not become a way back into it.
+# else (top-up amount, checkout) belongs to an action they are not allowed to take, and a state
+# left over from before the ban must not become a way back into it.
 _ALLOWED_STATE_GROUP = TicketForm.__name__
 
 
@@ -56,9 +54,11 @@ def _is_allowed_message(message: Message, locale: str, state_name: str | None) -
         return command in _ALLOWED_COMMANDS
 
     if message.text:
-        if any(message.text == t(key, locale) for key in _ALLOWED_MENU_KEYS):
+        # Current and retired labels alike: a stale panel still sends the old text, and a blocked
+        # button must stay blocked however it is spelled — otherwise a rename is a way round the ban.
+        if any(message.text in menu_labels(key, locale) for key in _ALLOWED_MENU_KEYS):
             return True
-        if any(message.text == t(key, locale) for key in _BLOCKED_MENU_KEYS):
+        if any(message.text in menu_labels(key, locale) for key in _BLOCKED_MENU_KEYS):
             return False
 
     # Anything else is free text. It is allowed only when it is going to support: either the ticket
@@ -100,7 +100,7 @@ class BanCheckMiddleware(BaseMiddleware):
         the making, not moderation. Everything under `sup:`, the ticket form, and plain replies on an
         open ticket stay live.
 
-    Everything else — buying, wallet, top-up, gifts, referrals, orders, the admin panel — is refused
+    Everything else — buying, wallet, top-up, orders, the admin panel — is refused
     with the suspension notice.
     """
 

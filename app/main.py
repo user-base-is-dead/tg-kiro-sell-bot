@@ -13,25 +13,22 @@ from app.bot.handlers.admin.balance_adjust import router as admin_balance_adjust
 from app.bot.handlers.admin.broadcast import router as admin_broadcast_router
 from app.bot.handlers.admin.categories import router as admin_categories_router
 from app.bot.handlers.admin.dashboard import router as admin_dashboard_router
-from app.bot.handlers.admin.gifts import router as admin_gifts_router
 from app.bot.handlers.admin.guard import router as admin_guard_router
 from app.bot.handlers.admin.logs import router as admin_logs_router
 from app.bot.handlers.admin.orders import router as admin_orders_router
+from app.bot.handlers.admin.orders import staff_router as admin_orders_staff_router
 from app.bot.handlers.admin.panel import router as admin_panel_router
 from app.bot.handlers.admin.payments import router as admin_payments_router
 from app.bot.handlers.admin.products import router as admin_products_router
 from app.bot.handlers.admin.refund_wallets import router as admin_refund_wallets_router
-from app.bot.handlers.admin.settings import router as admin_settings_router
 from app.bot.handlers.admin.support import router as admin_support_router
+from app.bot.handlers.admin.support import staff_router as admin_support_staff_router
 from app.bot.handlers.admin.users import router as admin_users_router
-from app.bot.handlers.gifts.redeem import router as gifts_redeem_router
 from app.bot.handlers.nav import router as nav_router
 from app.bot.handlers.orders.checkout import router as orders_checkout_router
 from app.bot.handlers.orders.history import router as orders_history_router
-from app.bot.handlers.payments.topup import router as payments_topup_router
 from app.bot.handlers.payments.topup_crypto import router as payments_topup_crypto_router
 from app.bot.handlers.products.browse import router as products_browse_router
-from app.bot.handlers.referrals.screen import router as referrals_screen_router
 from app.bot.handlers.support.create import router as support_create_router
 from app.bot.handlers.support.my_tickets import router as support_my_tickets_router
 from app.bot.handlers.support.relay import router as support_relay_router
@@ -54,6 +51,7 @@ from app.core.logging import configure_logging
 from app.core.redis import build_redis
 from app.database.repositories.admin_repo import AdminRepo
 from app.database.repositories.audit_repo import AuditRepo
+from app.database.schema_guard import check_schema
 from app.database.session import build_engine, build_sessionmaker, session_scope
 from app.jobs.broadcast_worker import resume_interrupted_broadcasts
 from app.jobs.scheduler import build_scheduler
@@ -71,14 +69,17 @@ def _include_routers(dp: Dispatcher) -> None:
     dp.include_router(admin_categories_router)
     dp.include_router(admin_products_router)
     dp.include_router(admin_orders_router)
+    # Admin-or-group-member routers (see app/bot/filters/staff.py): the parts of the admin surface
+    # that staff use inside the support and orders groups. Before the guard like every admin router,
+    # so a group member doing that work is served instead of refused.
+    dp.include_router(admin_orders_staff_router)
     dp.include_router(admin_refund_wallets_router)
     dp.include_router(admin_payments_router)
     dp.include_router(admin_balance_adjust_router)
-    dp.include_router(admin_gifts_router)
     dp.include_router(admin_support_router)
+    dp.include_router(admin_support_staff_router)
     dp.include_router(admin_dashboard_router)
     dp.include_router(admin_users_router)
-    dp.include_router(admin_settings_router)
     dp.include_router(admin_logs_router)
     dp.include_router(admin_broadcast_router)
     dp.include_router(admin_warranty_claims_router)
@@ -89,15 +90,12 @@ def _include_routers(dp: Dispatcher) -> None:
     dp.include_router(products_browse_router)
     dp.include_router(orders_checkout_router)
     dp.include_router(orders_history_router)
-    dp.include_router(payments_topup_router)
     dp.include_router(payments_topup_crypto_router)
     dp.include_router(profile_router)
     dp.include_router(refunds_router)
     dp.include_router(wallet_history_router)
     dp.include_router(warranty_router)
     dp.include_router(warranty_claim_router)
-    dp.include_router(gifts_redeem_router)
-    dp.include_router(referrals_screen_router)
     dp.include_router(support_create_router)
     dp.include_router(support_my_tickets_router)
     dp.include_router(nav_router)
@@ -109,8 +107,27 @@ async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    engine = build_engine(settings.database_url, echo=not settings.is_production)
+    engine = build_engine(settings.database_url)
     sessionmaker = build_sessionmaker(engine)
+
+    # A schema behind the code is not a per-screen bug, it is a broken deployment: the store, the
+    # orders list, the profile — every screen whose SELECT names a column the database does not
+    # have — answers "Something went wrong on our end" and the reason lives only in the log. So it
+    # is checked once, here, and refused loudly rather than served broken.
+    report = await check_schema(engine)
+    if report.is_broken:
+        logger.error(
+            "Database schema is behind the code - refusing to start.\n%s\n"
+            "Fix: run `alembic upgrade head` (or `python -m scripts.bootstrap_db`) against this "
+            "database, then start the bot again. Run `python -m scripts.doctor` for the full report.",
+            report.describe(),
+        )
+        await engine.dispose()
+        raise SystemExit(1)
+    if report.revision_behind:
+        # Not fatal: every column the models need is present, so nothing is broken yet. Still worth
+        # saying, because the next migration to land will be the one that breaks it.
+        logger.warning("Pending migrations: %s", report.describe())
 
     async with session_scope(sessionmaker) as session:
         revoked = await AdminRepo(session).sync_env_owners(settings.admin_ids)

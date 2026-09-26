@@ -10,18 +10,14 @@ logger = logging.getLogger(__name__)
 
 # Registered on the default scope, so every chat gets these regardless of who's on the other end.
 USER_COMMANDS = [
-    BotCommand(command="start", description="Main menu"),
-    BotCommand(command="products", description="Browse the store"),
-    BotCommand(command="orders", description="Your order history"),
-    BotCommand(command="support", description="Get help from our team"),
+    BotCommand(command="start", description="Open the PowerX menu"),
+    BotCommand(command="products", description="Open the shop"),
+    BotCommand(command="orders", description="My orders"),
+    BotCommand(command="support", description="Talk to our support team"),
     BotCommand(command="language", description="Change language"),
-    BotCommand(command="gift", description="Redeem a gift code"),
-    BotCommand(command="refer", description="Your referral link"),
-    BotCommand(command="warranty", description="Warranty status"),
-    BotCommand(command="topup", description="Top up your balance"),
-    BotCommand(command="wallet", description="Your wallet history"),
-    BotCommand(command="profile", description="Your account"),
-    BotCommand(command="help", description="Help"),
+    BotCommand(command="warranty", description="Warranty and claims"),
+    BotCommand(command="wallet", description="My wallet"),
+    BotCommand(command="help", description="How to use the bot"),
 ]
 
 # Layered on top of USER_COMMANDS, per admin chat (see register_bot_commands) — never registered
@@ -33,6 +29,7 @@ ADMIN_COMMANDS = [
     BotCommand(command="adjust_balance", description="Adjust user balance"),
     BotCommand(command="pending_orders", description="Orders awaiting fulfilment"),
     BotCommand(command="refund_wallets", description="Refunds waiting to be settled"),
+    BotCommand(command="wallet_balances", description="Who is holding store credit"),
     BotCommand(command="open_tickets", description="Support queue"),
 ]
 

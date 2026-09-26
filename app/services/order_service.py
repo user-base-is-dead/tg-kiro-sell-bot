@@ -23,7 +23,7 @@ from app.database.models.wallet import TxnType
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.user_repo import UserRepo
-from app.services import order_event_service, referral_service, stock_hold_service, wallet_service
+from app.services import order_event_service, stock_hold_service, wallet_service
 from app.utils.errors import UserError
 
 IDEMPOTENCY_WINDOW_SECONDS = 15
@@ -64,9 +64,9 @@ async def _claim_stock(
     payment method, and `claim_held` flips it HELD → RESERVED atomically, so if the expiry sweep got
     there first this falls through rather than delivering a credential somebody else may now hold.
 
-    Only then does it take a fresh AVAILABLE one — the path for gift orders and for a buyer whose
-    hold lapsed while a credential happens to be free again. Either way the shelf is consulted
-    before the wallet is, so an empty product never costs anyone money.
+    Only then does it take a fresh AVAILABLE one — the path for a buyer whose hold lapsed while a
+    credential happens to be free again. Either way the shelf is consulted before the wallet is, so
+    an empty product never costs anyone money.
     """
     if user_id is not None:
         held = await stock_hold_service.get_hold(session, product.id, user_id)
@@ -150,25 +150,44 @@ def _deliver_auto(
     return payloads
 
 
-def _start_warranty(session: AsyncSession, product: Product, order_item: OrderItem, user_id: int, now: datetime) -> None:
-    """Only ever called from `place_order` — a warranty is something a purchase buys.
+async def _start_warranty_on_delivery(
+    session: AsyncSession, *, order_item: OrderItem, user_id: int, now: datetime
+) -> Warranty | None:
+    """Open the warranty for one delivered line, dated from the delivery and not from the sale.
 
-    Giveaways deliberately have no path here. Gift items are their own stock (`GiftItem`, migration
-    0015) and are handed over without an order at all, so there is nothing to attach a warranty to
-    and no way for a free item to end up entitled to a replacement. A `place_gift_order` used to
-    exist that created an order, a delivery *and* a warranty for a catalog product handed out by a
-    code; it was already unreachable once the PRODUCT gift kind was dropped, and it is gone.
+    A warranty covers a product the buyer actually holds, so this is called at the moment the
+    content changes hands — inside `place_order` only for a line that auto-delivered in the same
+    transaction, and from `fulfill_manual_order` for one that a human sent later. It used to be
+    called unconditionally at purchase, which started the clock on orders that were still sitting in
+    the fulfilment queue: a buyer waiting a day for a hand-delivered item lost a day of cover before
+    ever seeing the product, and 🛡️ Warranty listed something that had not arrived yet.
+
+    The length comes off `order_item.warranty_days` rather than the live product, so it is the term
+    that was advertised when the sale happened even if the catalog has been edited since.
+
+    Existing rows are left alone. The unique constraint on `order_item_id` makes a second warranty an
+    IntegrityError that would take down the delivery with it, and an order placed before this change
+    already has one dated at purchase — re-dating it here would silently extend it.
     """
-    if product.warranty_days > 0:
-        session.add(
-            Warranty(
-                order_item_id=order_item.id,
-                user_id=user_id,
-                starts_at=now,
-                expires_at=now + timedelta(days=product.warranty_days),
-                status=WarrantyStatus.ACTIVE,
-            )
-        )
+    from sqlalchemy import select
+
+    days = order_item.warranty_days or 0
+    if days <= 0:
+        return None
+
+    existing = await session.execute(select(Warranty).where(Warranty.order_item_id == order_item.id))
+    if existing.scalars().first() is not None:
+        return None
+
+    warranty = Warranty(
+        order_item_id=order_item.id,
+        user_id=user_id,
+        starts_at=now,
+        expires_at=now + timedelta(days=days),
+        status=WarrantyStatus.ACTIVE,
+    )
+    session.add(warranty)
+    return warranty
 
 
 async def _claim_crypto_invoice(session: AsyncSession, order: Order, product_id: int) -> None:
@@ -318,7 +337,11 @@ async def place_order(
     if product.manual_stock is not None:
         product.manual_stock = max(0, product.manual_stock - qty)
 
-    _start_warranty(session, product, order_item, user_id, now)
+    # Only for an order that has actually been delivered. A PROCESSING order has been paid for and
+    # nothing else — its warranty is opened by `fulfill_manual_order` when the content is sent, so
+    # the buyer's cover starts when they can use the product rather than while they are still queued.
+    if order.status == OrderStatus.COMPLETED:
+        await _start_warranty_on_delivery(session, order_item=order_item, user_id=user_id, now=now)
 
     await session.flush()
 
@@ -342,11 +365,6 @@ async def place_order(
             reason=f"Auto-delivered {len(delivered_payloads)} item(s) from stock",
             at=now,
         )
-
-    if order.status == OrderStatus.COMPLETED:
-        buyer = await UserRepo(session).get_by_id(user_id)
-        if buyer is not None:
-            await referral_service.try_qualify_referral(session, user_id=user_id, referred_by_id=buyer.referred_by_id)
 
     return PlacedOrder(order=order, order_item=order_item, delivered_payloads=tuple(delivered_payloads))
 
@@ -404,7 +422,7 @@ async def notify_admins_of_manual_order(bot, session: AsyncSession, order: Order
             ],
             [
                 InlineKeyboardButton(
-                    text="🚫 Decline & Refund",
+                    text="🚫 Decline",
                     callback_data=AdminOrderCB(action="decline", id=order.id).pack(),
                 )
             ],
@@ -468,6 +486,10 @@ async def fulfill_manual_order(
                 delivered_by_admin_id=admin_telegram_id,
             )
         )
+        # The buyer has the content now, so this is where their cover begins. Doing it here rather
+        # than at purchase is the whole point: a hand-fulfilled order can sit in the queue for hours
+        # or days, and every one of those hours used to come out of the warranty.
+        await _start_warranty_on_delivery(session, order_item=item, user_id=order.user_id, now=now)
     order.status = OrderStatus.COMPLETED
     order.completed_at = now
     await session.flush()
@@ -481,10 +503,6 @@ async def fulfill_manual_order(
         reason="Delivered by hand",
         at=now,
     )
-
-    buyer = await UserRepo(session).get_by_id(order.user_id)
-    if buyer is not None:
-        await referral_service.try_qualify_referral(session, user_id=order.user_id, referred_by_id=buyer.referred_by_id)
 
     return order
 
@@ -524,21 +542,27 @@ class DeclinedOrder:
 
 
 async def decline_order(
-    session: AsyncSession, *, order_id: str, reason: str, admin_telegram_id: int | None = None
+    session: AsyncSession,
+    *,
+    order_id: str,
+    reason: str,
+    admin_telegram_id: int | None = None,
+    freeze: bool = False,
 ) -> DeclinedOrder:
-    """Kill an order with a reason on the record, and park what was paid in the Refund Wallet.
+    """Kill an order with a reason on the record, and put what was paid where staff chose.
 
     Three things happen and all three are permanent: the reason is written to the order (not only to a
     log an admin has to go looking for), the money leaves the store's books into a balance the buyer
     can see, and both get an ID that can be searched for later.
 
-    The money does NOT go back into the spendable balance. That was the old behaviour and it quietly
-    decided something the store hadn't: that a buyer who paid in USDT wants shop credit. Parking it
-    means an admin chooses — send it on chain, move it across, or split it — with `refund_state`
-    saying out loud that nobody has chosen yet.
+    The money never goes back into the spendable balance. It goes to one of two places, and the admin
+    picks which: the Refund Wallet (the default — settled later by a payout or a move across, with
+    `refund_state` PARKED saying nobody has decided yet), or, with `freeze=True`, the Frozen Wallet —
+    held for review, neither spendable nor refundable until an admin releases it (`refund_state`
+    FROZEN).
 
-    Idempotent on the money: `refund:<order.id>` is the same key the old refund path used, so an order
-    that was already refunded under the previous behaviour cannot be paid twice.
+    Idempotent on the money: both destinations use `refund:<order.id>`, the same key the old refund
+    path used, so an order can be paid out once and into exactly one of the two wallets.
     """
     order = await OrderRepo(session).get_by_id(order_id)
     # Only an order that has not been fulfilled can be declined. Refusing COMPLETED here as well as
@@ -574,28 +598,44 @@ async def decline_order(
     refund_event: OrderEvent | None = None
     refunded_minor = 0
     if order.payment_txn_id is not None and order.total_minor > 0:
-        txn = await wallet_service.credit_refund_balance(
-            session,
-            user_id=order.user_id,
-            amount_minor=order.total_minor,
-            currency=order.currency,
-            idempotency_key=f"refund:{order.id}",
-            ref_type="order",
-            ref_id=order.id,
-        )
+        if freeze:
+            txn = await wallet_service.credit_frozen_balance(
+                session,
+                user_id=order.user_id,
+                amount_minor=order.total_minor,
+                currency=order.currency,
+                idempotency_key=f"refund:{order.id}",
+                ref_type="order",
+                ref_id=order.id,
+            )
+            order.refund_state = RefundState.FROZEN
+            event_kind = OrderEventKind.REFUND_FROZEN
+            event_note = "Frozen — held in the Frozen Wallet, not spendable or refundable until released"
+        else:
+            txn = await wallet_service.credit_refund_balance(
+                session,
+                user_id=order.user_id,
+                amount_minor=order.total_minor,
+                currency=order.currency,
+                idempotency_key=f"refund:{order.id}",
+                ref_type="order",
+                ref_id=order.id,
+            )
+            order.refund_state = RefundState.PARKED
+            event_kind = OrderEventKind.REFUND_PARKED
+            event_note = "Held in Refund Wallet — not spendable until settled"
         refunded_minor = order.total_minor
-        order.refund_state = RefundState.PARKED
         order.refund_amount_minor = refunded_minor
         await session.flush()
 
         refund_event = await order_event_service.record(
             session,
             order,
-            OrderEventKind.REFUND_PARKED,
+            event_kind,
             actor=OrderEventActor.ADMIN if admin_telegram_id else OrderEventActor.SYSTEM,
             actor_telegram_id=admin_telegram_id,
             amount_minor=refunded_minor,
-            reason="Held in Refund Wallet — not spendable until settled",
+            reason=event_note,
             reference=f"txn#{txn.id}",
             at=now,
         )

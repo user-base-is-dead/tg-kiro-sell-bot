@@ -4,7 +4,7 @@ from typing import Any
 
 
 class UserError(Exception):
-    """Expected, user-facing failure (out of stock, invalid gift code, insufficient balance, ...).
+    """Expected, user-facing failure (out of stock, invalid amount, insufficient balance, ...).
     Caught by ErrorMiddleware and rendered via i18n — never a raw traceback to the user."""
 
     def __init__(self, i18n_key: str, **vars: Any) -> None:

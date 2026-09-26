@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import secrets
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.user import User
-
-
-def _new_referral_code() -> str:
-    return secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
 
 
 class UserRepo:
@@ -22,10 +17,6 @@ class UserRepo:
 
     async def get_by_telegram_id(self, telegram_id: int) -> User | None:
         result = await self._session.execute(select(User).where(User.telegram_id == telegram_id))
-        return result.scalar_one_or_none()
-
-    async def get_by_referral_code(self, code: str) -> User | None:
-        result = await self._session.execute(select(User).where(User.referral_code == code))
         return result.scalar_one_or_none()
 
     async def list_page(self, *, offset: int, limit: int) -> list[User]:
@@ -62,7 +53,6 @@ class UserRepo:
         first_name: str | None,
         last_name: str | None,
         chat_id: int | None,
-        referred_by_id: int | None = None,
         default_locale: str = "en",
     ) -> tuple[User, bool]:
         user = await self.get_by_telegram_id(telegram_id)
@@ -70,10 +60,6 @@ class UserRepo:
         is_new = user is None
 
         if is_new:
-            code = _new_referral_code()
-            while await self.get_by_referral_code(code) is not None:
-                code = _new_referral_code()
-
             user = User(
                 telegram_id=telegram_id,
                 username=username,
@@ -81,8 +67,6 @@ class UserRepo:
                 last_name=last_name,
                 chat_id=chat_id,
                 locale=default_locale,
-                referral_code=code,
-                referred_by_id=referred_by_id,
                 first_seen_at=now,
                 last_seen_at=now,
             )

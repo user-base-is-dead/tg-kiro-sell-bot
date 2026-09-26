@@ -595,8 +595,7 @@ async def confirm_delete(query: CallbackQuery, callback_data: AdminProductCB, se
     await query.message.edit_text(
         f"⚠️ Delete <b>{product.name}</b> permanently?\n\n"
         "<i>Past orders keep their name, price and delivered items, and buyers keep their warranty "
-        "— only the catalog entry goes. Unsold stock for it is discarded, and any gift code that "
-        "granted it is disabled.</i>",
+        "— only the catalog entry goes. Unsold stock for it is discarded.</i>",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [btn("🗑️ Yes, delete", AdminProductCB(action="delete_ok", id=callback_data.id).pack(), DANGER)],

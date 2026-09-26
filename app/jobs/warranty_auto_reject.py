@@ -42,16 +42,16 @@ async def auto_reject_expired_warranty_claims(sessionmaker: async_sessionmaker, 
             if outcome.granted_seconds > 0:
                 tail = (
                     f"⏱️ Your warranty is still active with <b>{format_duration(outcome.granted_seconds)}</b> "
-                    f"remaining (expires {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC)."
+                    f"left (ends {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC)."
                 )
             else:
                 tail = "The warranty period for this item has also ended."
 
             text = (
-                "❌ Your warranty claim was <b>closed automatically</b> because our team didn't "
-                "respond in time.\n\n"
+                "⌛ <b>Warranty claim closed</b>\n\n"
+                "Your claim was <b>closed automatically</b> because our team didn't respond in time.\n\n"
                 f"{tail}\n\n"
-                "We're sorry about that — please contact Customer Support and we'll pick it up."
+                "We're sorry about that — open 🎧 Support and we'll pick it up from here."
             )
 
             owner = await user_repo.get_by_id(warranty.user_id)

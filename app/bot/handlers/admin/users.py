@@ -33,6 +33,13 @@ def _handle(target) -> str:
     return f"@{target.username}" if target.username else "—"
 
 
+def _who(target) -> str:
+    """A label that always identifies somebody. `_handle` prints "—" for an account with no
+    username, which is fine next to the ID in a list but useless on a button that has room for one
+    thing."""
+    return f"@{target.username}" if target.username else f"id {target.telegram_id}"
+
+
 def _list_keyboard(users: list, page: Page) -> InlineKeyboardMarkup:
     """Numbered buttons rather than one row per username: 20 full-width rows is a wall a phone has
     to scroll past. The number is the member's signup rank and matches the text above, so #1 is
@@ -191,9 +198,6 @@ async def _render_detail(session: AsyncSession, target) -> str:
     recent = await order_repo.list_for_user(target.id, offset=0, limit=5)
 
     full_name = " ".join(p for p in (target.first_name, target.last_name) if p) or "—"
-    referrer = None
-    if target.referred_by_id is not None:
-        referrer = await UserRepo(session).get_by_id(target.referred_by_id)
 
     lines = [
         f"👤 <b>{full_name}</b>",
@@ -215,23 +219,28 @@ async def _render_detail(session: AsyncSession, target) -> str:
             f"💸 Held for refund: <b>{format_minor(wallet.refund_balance_minor, wallet.currency)}</b> "
             "(not spendable)"
         )
+    if wallet.frozen_balance_minor:
+        lines.append(
+            f"🧊 Frozen: <b>{format_minor(wallet.frozen_balance_minor, wallet.currency)}</b> "
+            "(held for review — release it from 💸 Refund Wallets)"
+        )
+    if wallet.sanctioned_balance_minor:
+        lines.append(
+            f"🚫 Sanctioned: <b>{format_minor(wallet.sanctioned_balance_minor, wallet.currency)}</b> "
+            "(blocked — release it from 💸 Refund Wallets)"
+        )
     lines.append(f"📦 Orders: {order_count}")
 
     if recent:
         lines.append("")
         lines.append("<b>Recent orders:</b>")
         for order in recent:
-            flag = " 💸" if order.refund_state is RefundState.PARKED else ""
+            flag = {RefundState.PARKED: " 💸", RefundState.FROZEN: " 🧊"}.get(order.refund_state, "")
             lines.append(
                 f"  <code>{order.order_number}</code> · "
                 f"{format_minor(order.total_minor, order.currency)} · {order.status.value}{flag}"
             )
 
-    lines += [
-        "",
-        f"🔗 Referral code: <code>{target.referral_code}</code>",
-        f"👥 Referred by: {_handle(referrer) if referrer else '—'}",
-    ]
     if target.notes:
         lines += ["", f"📝 Notes: {target.notes}"]
 
@@ -392,6 +401,118 @@ async def apply_credit(message: Message, state: FSMContext, session: AsyncSessio
             target, data.get("page", 1), target_is_admin=await is_admin_user(session, target.telegram_id)
         ),
     )
+
+
+# ---- Who is holding store credit ----
+
+BALANCE_PAGE_SIZE = 15
+
+
+def _balances_keyboard(rows_data: list[tuple], page: Page) -> InlineKeyboardMarkup:
+    """One button per holder, straight to their profile — from there the 💰 Wallet button is the only
+    place a spendable balance can be moved, so the list ends where the work gets done."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            btn(
+                f"💳 {_who(target)} — {format_minor(wallet.balance_minor, wallet.currency)}",
+                AdminUserCB(action="view", id=str(target.id), page=page.clamped_page).pack(),
+                SUCCESS,
+            )
+        ]
+        for wallet, target in rows_data
+    ]
+
+    nav: list[InlineKeyboardButton] = []
+    if page.has_prev:
+        nav.append(
+            btn("◀️ Previous", AdminMiscCB(action="balances", page=page.clamped_page - 1).pack(), PRIMARY)
+        )
+    if page.total_pages > 1:
+        nav.append(btn(f"{page.clamped_page}/{page.total_pages}", "noop", NEUTRAL))
+    if page.has_next:
+        nav.append(
+            btn("Next ▶️", AdminMiscCB(action="balances", page=page.clamped_page + 1).pack(), PRIMARY)
+        )
+    if nav:
+        rows.append(nav)
+
+    rows.append([btn("👥 All users", AdminUserCB(action="list").pack(), PRIMARY)])
+    rows.append(nav_row("en", back_target="admin_panel", home=False))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _render_balances(session: AsyncSession, page_num: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Only accounts with money in them, biggest balance first.
+
+    A zero balance is the default state of every account that has ever pressed /start, so including
+    them would make this the users list with an extra column. Anything above zero — even a single
+    cent left over from a purchase — is a real balance and is listed.
+    """
+    repo = WalletRepo(session)
+    total_holders = await repo.count_wallets_with_balance()
+    page = Page(page=page_num, page_size=BALANCE_PAGE_SIZE, total_items=total_holders)
+    rows_data = (
+        await repo.list_wallets_with_balance(limit=BALANCE_PAGE_SIZE, offset=page.offset)
+        if total_holders
+        else []
+    )
+    currency = get_settings().default_currency
+
+    if not total_holders:
+        return (
+            "💳 <b>WALLET BALANCES</b>\n\n"
+            "Nobody is holding any balance right now.\n\n"
+            "An account appears here as soon as it has more than zero in its spendable wallet — "
+            "from a refund moved into their wallet, a crypto payment, or a credit you gave them. Accounts sitting at "
+            "zero are left out on purpose.",
+            _balances_keyboard([], page),
+        )
+
+    held = await repo.total_balance_held()
+    shown = f"Showing {page.offset + 1}–{page.offset + len(rows_data)}"
+    if page.total_pages > 1:
+        shown += f" · page {page.clamped_page}/{page.total_pages}"
+    lines = [
+        "💳 <b>WALLET BALANCES</b>",
+        "",
+        f"<b>{format_minor(held, currency)}</b> held across <b>{total_holders}</b> account(s) · largest first",
+        shown,
+        "",
+        "This is spendable credit — they can buy with it at any time. Accounts at zero aren't listed.",
+        "",
+    ]
+    for offset, (wallet, target) in enumerate(rows_data):
+        rank = page.offset + offset + 1
+        flag = "🚫 " if target.status == UserStatus.BANNED else ""
+        parked = (
+            f"\n     💸 plus {format_minor(wallet.refund_balance_minor, wallet.currency)} held for refund"
+            if wallet.refund_balance_minor
+            else ""
+        )
+        lines.append(
+            f"<b>{rank}.</b> {flag}{_handle(target)} · <code>{target.telegram_id}</code>\n"
+            f"     💳 <b>{format_minor(wallet.balance_minor, wallet.currency)}</b>{parked}"
+        )
+
+    lines += ["", "Tap somebody to open their profile — history, and the controls to credit or debit them."]
+    return "\n".join(lines), _balances_keyboard(rows_data, page)
+
+
+@router.callback_query(AdminMiscCB.filter(F.action == "balances"))
+async def open_balances(
+    query: CallbackQuery, callback_data: AdminMiscCB, state: FSMContext, session: AsyncSession
+) -> None:
+    await state.clear()
+    text, markup = await _render_balances(session, callback_data.page)
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+
+
+@router.message(Command("wallet_balances"))
+async def cmd_balances(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    text, markup = await _render_balances(session, 1)
+    await message.answer(text, reply_markup=markup)
 
 
 # ---- Search, for finding one account in a long list ----

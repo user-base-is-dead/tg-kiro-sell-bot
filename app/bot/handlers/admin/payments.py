@@ -129,8 +129,9 @@ async def approve(query: CallbackQuery, callback_data: AdminPaymentCB, session: 
             try:
                 await query.message.bot.send_message(
                     buyer.chat_id,
-                    f"✅ Your top-up of {format_minor(approved.amount_minor, wallet_row.currency)} was approved! "
-                    f"New balance: {format_minor(wallet_row.balance_minor, wallet_row.currency)}",
+                    "✅ <b>Top-up approved</b>\n\n"
+                    f"<blockquote>➕ Added: {format_minor(approved.amount_minor, wallet_row.currency)}\n"
+                    f"👛 New balance: {format_minor(wallet_row.balance_minor, wallet_row.currency)}</blockquote>",
                 )
             except Exception:  # noqa: BLE001
                 pass

@@ -10,6 +10,7 @@ from app.bot.keyboards.common import back_keyboard
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.database.models.user import User
 from app.database.repositories.warranty_repo import WarrantyRepo
+from app.locales.i18n import t
 from app.services.warranty_service import display_remaining, effective_status
 from app.utils.pagination import Page
 
@@ -19,23 +20,22 @@ _STATUS_EMOJI = {"ACTIVE": "🟢", "EXPIRED": "🔴", "CLAIMED": "🔵", "VOID":
 # VOID is only ever reached by refunding a claim, so it says what actually happened rather than
 # leaving the customer to work out what a void warranty means.
 _STATUS_LABEL = {
-    "ACTIVE": "ACTIVE",
-    "EXPIRED": "EXPIRED",
-    "CLAIMED": "UNDER REVIEW",
-    "VOID": "REFUNDED",
+    "ACTIVE": "Active",
+    "EXPIRED": "Expired",
+    "CLAIMED": "Under review",
+    "VOID": "Refunded",
 }
 PAGE_SIZE = 12
 
 EMPTY_TEXT = (
-    "🛡️ <b>WARRANTY</b>\n\n"
-    "You don't have any warranties yet.\n\n"
-    "Every eligible product you buy comes with a warranty that starts automatically "
-    "at the moment of purchase — nothing to register.\n\n"
-    "Here you'll be able to:\n"
-    "• See each warranty's start and expiry date\n"
-    "• Check how much time is left\n"
-    "• File a claim if something stops working\n\n"
-    "🛒 Make your first purchase and it will show up right here."
+    "🛡️ <b>Warranty</b>\n\n"
+    "No warranties yet.\n\n"
+    "Every eligible product you buy comes with a warranty that starts on its own the moment your "
+    "order is delivered — there's nothing to register.\n\n"
+    "<blockquote>▸ See when each warranty starts and ends\n"
+    "▸ Check how much cover is left\n"
+    "▸ File a claim if something stops working</blockquote>\n\n"
+    "🛒 Once you make a purchase, it will show up right here."
 )
 
 
@@ -51,7 +51,7 @@ async def _render_warranty(repo: WarrantyRepo, user: User, page_num: int = 1) ->
     if not warranties:
         return EMPTY_TEXT, back_keyboard(user.locale)
 
-    header = "🛡️ <b>WARRANTY</b>"
+    header = "🛡️ <b>Warranty</b>"
     if page.total_pages > 1:
         header += f"  <i>({page.clamped_page}/{page.total_pages})</i>"
 
@@ -63,22 +63,23 @@ async def _render_warranty(repo: WarrantyRepo, user: User, page_num: int = 1) ->
         number = page.offset + offset + 1
         product_name = w.order_item.product_name if w.order_item else "—"
         # Derived, not read off the row: the expiry sweep runs hourly, so a warranty that lapsed
-        # ten minutes ago still stores ACTIVE and would otherwise render "expired 🟢 ACTIVE".
+        # ten minutes ago still stores ACTIVE and would otherwise render "expired 🟢 Active".
         status = effective_status(w)
         emoji = _STATUS_EMOJI.get(status.value, "•")
         label = _STATUS_LABEL.get(status.value, status.value)
 
+        # One card per item, so each warranty reads as its own block.
         blocks.append(
-            f"<b>{number}. {product_name}</b>\n"
+            f"<blockquote><b>{number}. {product_name}</b>\n"
             f"📅 {w.starts_at:%d %b %Y} → ⏳ {w.expires_at:%d %b %Y}\n"
-            f"⏱️ {display_remaining(w)}   {emoji} {label}"
+            f"⏱️ {display_remaining(w)} · {emoji} {label}</blockquote>"
         )
         # A claim button on every item, including expired and already-claimed ones. Hiding it
         # leaves the customer with no way to ask why, so the button always exists and the handler
         # explains the situation.
-        rows.append([btn(f"🛡️ Claim #{number} · {_truncate(product_name)}", f"wclaim:{w.id}", PRIMARY)])
+        rows.append([btn(f"📝 Claim #{number} · {_truncate(product_name)}", f"wclaim:{w.id}", PRIMARY)])
 
-    text = header + "\n\n" + "\n\n━━━━━━━━━━━━━━━━━━\n\n".join(blocks)
+    text = header + "\n\n" + "\n\n".join(blocks)
 
     nav_rows = []
     if page.has_prev:
@@ -90,7 +91,7 @@ async def _render_warranty(repo: WarrantyRepo, user: User, page_num: int = 1) ->
     if nav_rows:
         rows.append(nav_rows)
 
-    rows.append([btn("🏠 Home", NavCB(target="home").pack(), PRIMARY)])
+    rows.append([btn(t("menu.home", user.locale), NavCB(target="home").pack(), PRIMARY)])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 

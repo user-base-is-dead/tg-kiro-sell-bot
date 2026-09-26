@@ -104,9 +104,6 @@ class ProductRepo:
           * **delete** — *unsold* `stock_items`, held ones included. Unsold keys for a product
             nobody can buy any more are dead weight, and a live hold is a 5-minute reservation on a
             product that is going away;
-
-        Gift codes are deliberately absent from that list: a gift carries its own items and never
-        points at a catalog product, so deleting a product cannot break one.
         """
         product_id = product.id
 

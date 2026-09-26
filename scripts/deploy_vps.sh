@@ -16,9 +16,9 @@ sudo systemctl enable --now docker
 
 # 3. Check for .env file
 if [ ! -f .env ]; then
-    echo "⚠️  .env file missing! Creating from .env.example..."
-    cp .env.example .env
-    echo "❗ Please edit .env with your real BOT_TOKEN, ADMIN_IDS, and credentials before running again."
+    echo "⚠️  .env file missing! Create it next to docker-compose.yml before running again."
+    echo "❗ Required: BOT_TOKEN, DATABASE_URL, REDIS_URL, ENCRYPTION_KEY, WALLET_ADDRESS."
+    echo "   Usually also: ADMIN_IDS, SUPPORT_GROUP_ID, ORDERS_GROUP_ID (see app/core/config.py)."
     exit 1
 fi
 

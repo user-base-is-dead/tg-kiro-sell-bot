@@ -31,59 +31,52 @@ def _price(product: Product) -> str:
 
 def _stock_line(product: Product, available: int) -> str:
     if product.fulfillment_mode == FulfillmentMode.MANUAL and product.manual_stock is None:
-        return "📦 Made to order\n"
-    return f"📦 <b>{available} available</b>\n"
+        return "📦 Made to order"
+    return f"📦 <b>{available} available</b>"
+
+
+def _facts(product: Product, available: int) -> str:
+    """Price, warranty and stock as one card, the same way the product's own page shows them."""
+    lines = [f"💰 Price: <b>{_price(product)}</b>"]
+    if product.warranty_days:
+        lines.append(f"🛡️ Warranty: {product.warranty_days} days")
+    lines.append(_stock_line(product, available))
+    return "<blockquote>" + "\n".join(lines) + "</blockquote>"
 
 
 def build_announcement(kind: str, product: Product, available: int) -> str:
     """The message body users receive. Kept out of the send path so tests can read it directly."""
-    warranty = f"🛡️ Warranty: {product.warranty_days} days\n" if product.warranty_days else ""
-
     if kind == _NEW:
         return (
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🆕 <b>NEW PRODUCT</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            f"🛍️ <b>{product.name}</b>\n\n"
-            f"💰 Price: {_price(product)}\n"
-            f"{warranty}"
-            f"{_stock_line(product, available)}"
-            "\nJust added to the store — open /products to grab it."
+            "🆕 <b>New in the Shop</b>\n\n"
+            f"🛒 <b>{product.name}</b>\n\n"
+            f"{_facts(product, available)}\n\n"
+            "Tap <b>Buy Now</b> below, or find it any time in 🛒 Shop."
         )
 
     if kind == _RESTOCK:
         return (
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🔄 <b>BACK IN STOCK</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            f"🛍️ <b>{product.name}</b> is available again.\n\n"
-            f"💰 Price: {_price(product)}\n"
-            f"{warranty}"
-            f"{_stock_line(product, available)}"
-            "\nIt sold out once already — open /products before it does again."
+            "🔄 <b>Back in Stock</b>\n\n"
+            f"🛒 <b>{product.name}</b> is available again.\n\n"
+            f"{_facts(product, available)}\n\n"
+            "It sold out once already — tap <b>Buy Now</b> before it goes again."
         )
 
     if kind == _MORE:
-        # Distinct from BACK IN STOCK on purpose. Topping up a shelf that never emptied is a
+        # Distinct from Back in Stock on purpose. Topping up a shelf that never emptied is a
         # different event, and sending "it's available again" about something that was available
         # all along teaches shoppers that these messages are not to be trusted.
         return (
-            "━━━━━━━━━━━━━━━━━━\n"
-            "📦 <b>MORE STOCK ADDED</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            f"🛍️ <b>{product.name}</b> — more units just landed.\n\n"
-            f"💰 Price: {_price(product)}\n"
-            f"{warranty}"
-            f"{_stock_line(product, available)}"
-            "\nOpen /products to pick one up."
+            "📦 <b>Fresh Stock Added</b>\n\n"
+            f"🛒 <b>{product.name}</b> — more units just landed.\n\n"
+            f"{_facts(product, available)}\n\n"
+            "Tap <b>Buy Now</b> below to pick one up."
         )
 
     return (
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🔴 <b>SOLD OUT</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🛍️ <b>{product.name}</b> is now out of stock.\n\n"
-        "No need to keep checking — you'll get a <b>BACK IN STOCK</b> message here the moment "
+        "🔴 <b>Sold Out</b>\n\n"
+        f"🛒 <b>{product.name}</b> is out of stock for now.\n\n"
+        "No need to keep checking — you'll get a <b>Back in Stock</b> message here the moment "
         "it returns."
     )
 
@@ -94,7 +87,7 @@ def _buy_buttons(kind: str, product: Product) -> str | None:
     if kind == _SOLD_OUT:
         return None
     cb = ProductCB(action="buy", id=str(product.id)).pack()
-    return json.dumps([[{"text": "🛒 Buy Now", "callback_data": cb, "style": SUCCESS}]])
+    return json.dumps([[{"text": "⚡ Buy Now", "callback_data": cb, "style": SUCCESS}]])
 
 
 async def send_announcement(

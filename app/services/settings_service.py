@@ -10,11 +10,10 @@ from app.database.repositories.settings_repo import SettingsRepo
 # BotSetting is DB-backed, not env-backed, so admins can tune it at runtime without a
 # redeploy. No in-process cache yet (traffic doesn't warrant it) — add one here first if it
 # ever becomes a hot path.
-
-DEFAULTS: dict[str, Any] = {
-    "referral_reward_minor": 10,  # 0.10 in default currency
-    "referral_qualify_on": "first_completed_order",
-}
+#
+# Empty since the Invite & Earn feature (and its referral reward) was removed. Kept as the place a
+# future runtime setting gets its default.
+DEFAULTS: dict[str, Any] = {}
 
 
 async def get_setting(session: AsyncSession, key: str) -> Any:

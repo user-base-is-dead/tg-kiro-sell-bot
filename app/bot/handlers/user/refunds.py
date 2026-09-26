@@ -22,12 +22,28 @@ router = Router(name="user.refunds")
 
 # What each ledger row means to the person the money belongs to. The admin screen shows the raw
 # transaction type; a buyer should not have to know what REFUND_PARK is to read their own history.
+# FROZEN_RELEASE, SANCTION and SANCTION_RELEASE each write two rows (one out of a balance, one into
+# another) and are labelled by sign in `_ledger_key` instead.
 _LEDGER_LABEL = {
     TxnType.REFUND_PARK: "refund_row_parked",
     TxnType.REFUND_PAYOUT: "refund_row_sent",
     TxnType.REFUND_MOVE: "refund_row_moved",
     TxnType.REFUND_ADJUST: "refund_row_adjusted",
+    TxnType.FROZEN_PARK: "refund_row_frozen",
 }
+
+_BY_SIGN = {
+    TxnType.FROZEN_RELEASE: ("refund_row_released_out", "refund_row_released_in"),
+    TxnType.SANCTION: ("refund_row_sanctioned_out", "refund_row_sanctioned_in"),
+    TxnType.SANCTION_RELEASE: ("refund_row_unsanctioned_out", "refund_row_unsanctioned_in"),
+}
+
+
+def _ledger_key(txn) -> str | None:
+    if txn.type in _BY_SIGN:
+        out, into = _BY_SIGN[txn.type]
+        return out if txn.amount_minor < 0 else into
+    return _LEDGER_LABEL.get(txn.type)
 
 
 async def render_refunds(session: AsyncSession, user: User) -> tuple[str, InlineKeyboardMarkup]:
@@ -45,19 +61,25 @@ async def render_refunds(session: AsyncSession, user: User) -> tuple[str, Inline
     locale = user.locale
     lines = [t("refunds.title", locale), ""]
 
-    if not orders and wallet.refund_balance_minor <= 0:
+    held = wallet.refund_balance_minor
+    frozen_held = wallet.frozen_balance_minor
+    sanctioned_held = wallet.sanctioned_balance_minor
+    if not orders and held <= 0 and frozen_held <= 0 and sanctioned_held <= 0:
         lines.append(t("refunds.empty", locale))
         return "\n".join(lines), with_nav([], locale, back_target="profile", home=True)
 
-    lines.append(
-        t("refunds.held", locale, amount=format_minor(wallet.refund_balance_minor, wallet.currency))
-    )
+    lines.append(t("refunds.held", locale, amount=format_minor(held, wallet.currency)))
+    if sanctioned_held:
+        lines.append(t("refunds.sanctioned", locale, amount=format_minor(sanctioned_held, wallet.currency)))
+    if frozen_held:
+        lines.append(t("refunds.frozen", locale, amount=format_minor(frozen_held, wallet.currency)))
     lines.append(
         t("refunds.spendable", locale, amount=format_minor(wallet.balance_minor, wallet.currency))
     )
     lines.append("")
 
     pending = [o for o in orders if o.refund_state is RefundState.PARKED]
+    frozen = [o for o in orders if o.refund_state is RefundState.FROZEN]
     settled = [o for o in orders if o.refund_state is RefundState.SETTLED]
 
     if pending:
@@ -80,6 +102,18 @@ async def render_refunds(session: AsyncSession, user: User) -> tuple[str, Inline
                     )
         lines.append("")
 
+    if frozen:
+        lines.append(t("refunds.frozen_heading", locale))
+        for order in frozen:
+            when = f"{as_utc(order.cancelled_at):%d %b %Y}" if order.cancelled_at else "—"
+            lines.append(
+                f"• <code>{order.order_number}</code> — "
+                f"<b>{format_minor(order.refund_amount_minor or 0, order.currency)}</b> 🧊 · {when}"
+            )
+            if order.failure_reason:
+                lines.append(f"   {escape_html(order.failure_reason)}")
+        lines.append("")
+
     if settled:
         lines.append(t("refunds.settled_heading", locale))
         for order in settled:
@@ -92,7 +126,7 @@ async def render_refunds(session: AsyncSession, user: User) -> tuple[str, Inline
     if ledger:
         lines.append(t("refunds.ledger_heading", locale))
         for txn in ledger:
-            key = _LEDGER_LABEL.get(txn.type)
+            key = _ledger_key(txn)
             if key is None:
                 continue
             lines.append(
@@ -101,10 +135,14 @@ async def render_refunds(session: AsyncSession, user: User) -> tuple[str, Inline
             )
         lines.append("")
 
-    lines.append(
-        t("refunds.footer_pending", locale) if wallet.refund_balance_minor > 0
-        else t("refunds.footer_clear", locale)
-    )
+    if held > 0:
+        lines.append(t("refunds.footer_pending", locale))
+    if sanctioned_held > 0:
+        lines.append(t("refunds.footer_sanctioned", locale))
+    if frozen_held > 0:
+        lines.append(t("refunds.footer_frozen", locale))
+    if held <= 0 and frozen_held <= 0 and sanctioned_held <= 0:
+        lines.append(t("refunds.footer_clear", locale))
 
     return "\n".join(lines), with_nav([], locale, back_target="profile", home=True)
 

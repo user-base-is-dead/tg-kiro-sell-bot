@@ -8,15 +8,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.filters.menu_button import MenuButton
+from app.bot.filters.menu_button import MenuButton, menu_labels
+from app.bot.filters.staff import InStaffGroup
 from app.bot.states.broadcast_form import BroadcastForm
 from app.bot.states.category_form import CategoryForm
-from app.bot.states.gift_form import (
-    GiftAddItemsForm,
-    GiftCreateForm,
-    GiftEditForm,
-    GiftItemEditForm,
-)
 from app.bot.states.order_decline_form import OrderDeclineForm, OrderSearchForm
 from app.bot.states.order_fulfill_form import OrderFulfillForm
 from app.bot.states.product_form import (
@@ -26,8 +21,12 @@ from app.bot.states.product_form import (
     ProductSearchForm,
     StockUploadForm,
 )
-from app.bot.states.refund_wallet_form import RefundMoveForm, RefundPayoutForm
-from app.bot.states.settings_form import SettingsForm
+from app.bot.states.refund_wallet_form import (
+    RefundMoveForm,
+    RefundPayoutForm,
+    RefundReleaseForm,
+    RefundSanctionForm,
+)
 from app.bot.states.user_search_form import UserBalanceForm, UserSearchForm
 from app.database.models.user import User
 from app.database.repositories.audit_repo import AuditRepo
@@ -52,6 +51,7 @@ _ADMIN_COMMANDS = (
     "dashboard",
     "pending_orders",
     "refund_wallets",
+    "wallet_balances",
     "open_tickets",
     "close",
     "broadcast_status",
@@ -62,7 +62,7 @@ _ADMIN_COMMANDS = (
 
 # CallbackData prefixes owned by the admin routers (see app/bot/callbacks.py).
 _ADMIN_CB_PREFIXES = frozenset(
-    {"acat", "aprod", "aord", "apay", "agift", "atick", "amisc", "auser", "aref"}
+    {"acat", "aprod", "aord", "apay", "atick", "amisc", "auser", "aref"}
 )
 
 # NavCB targets that only make sense for an admin.
@@ -72,13 +72,14 @@ _ADMIN_NAV_TARGETS = frozenset({"admin_panel"})
 # starts a wizard and loses admin mid-flow keeps a live FSM state, but the admin routers now
 # reject their next step — the plain-text step would otherwise fall through to the support
 # relay catch-all and be sent to staff as a support message.
+#
+# Not inside the support or orders group, though. Everyone there is staff, and a message there that
+# no form claimed is ordinary talk in a topic: someone halfway through fulfilling one order who
+# answers a buyer in another topic has that answer skipped by the fulfil form (it belongs to a
+# different thread), and it has to reach the relay — not be refused here, with their form wiped.
 _ADMIN_STATE_GROUPS = (
     BroadcastForm,
     CategoryForm,
-    GiftAddItemsForm,
-    GiftCreateForm,
-    GiftEditForm,
-    GiftItemEditForm,
     OrderDeclineForm,
     OrderFulfillForm,
     OrderSearchForm,
@@ -88,7 +89,8 @@ _ADMIN_STATE_GROUPS = (
     ProductSearchForm,
     RefundMoveForm,
     RefundPayoutForm,
-    SettingsForm,
+    RefundReleaseForm,
+    RefundSanctionForm,
     StockUploadForm,
     UserBalanceForm,
     UserSearchForm,
@@ -142,13 +144,13 @@ async def deny_admin_message(
     # 🛡️ row is pressing a button from the retired panel. Clear it here rather than making them
     # find their way to /start for the removal.
     markup = None
-    if message.text == t("menu.admin_panel", locale):
+    if message.text in menu_labels("menu.admin_panel", locale):
         markup = ReplyKeyboardRemove()
 
     await message.answer(t("common.unauthorized", locale), reply_markup=markup)
 
 
-@router.message(StateFilter(*_ADMIN_STATE_GROUPS))
+@router.message(StateFilter(*_ADMIN_STATE_GROUPS), ~InStaffGroup())
 async def deny_admin_form_step(
     message: Message,
     state: FSMContext,

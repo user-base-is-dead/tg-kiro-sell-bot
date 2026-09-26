@@ -1,7 +1,7 @@
-# secrets / environment
+# secrets / environment — no .env file of any kind is ever committed. An example file with real
+# values in it is how the bot token got published once; there is no exception for one any more.
 .env
 .env.*
-!.env.example
 
 # python
 __pycache__/
@@ -23,8 +23,9 @@ venv/
 # scratch output
 out*.txt
 
-# logs
+# logs — and the rotated copies RotatingFileHandler leaves beside them (bot.log.1, bot.log.2, …)
 *.log
+*.log.*
 
 # OS
 .DS_Store

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from aiogram import Router
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import NavCB
@@ -20,6 +19,9 @@ from app.utils.time import as_utc
 
 router = Router(name="user.wallet_history")
 
+# 📊 Transactions has no command of its own: /wallet opens the 👛 Wallet screen, and this statement
+# is one tap away from it (the "wallet" / "wallet-N" nav targets in nav.py).
+
 PAGE_SIZE = 10
 
 # What each ledger row means to the person whose money it is. A buyer should not have to know what
@@ -33,8 +35,6 @@ _ROW_LABEL = {
     TxnType.PURCHASE: "row_purchase",
     TxnType.REFUND: "row_refund",
     TxnType.REFUND_MOVE: "row_refund_moved",
-    TxnType.GIFT: "row_gift",
-    TxnType.REFERRAL: "row_referral",
 }
 
 
@@ -96,6 +96,14 @@ async def render_wallet_history(
         lines.append(
             t("wallet.held", locale, amount=format_minor(wallet.refund_balance_minor, wallet.currency))
         )
+    if wallet.frozen_balance_minor:
+        lines.append(
+            t("wallet.frozen", locale, amount=format_minor(wallet.frozen_balance_minor, wallet.currency))
+        )
+    if wallet.sanctioned_balance_minor:
+        lines.append(
+            t("wallet.sanctioned", locale, amount=format_minor(wallet.sanctioned_balance_minor, wallet.currency))
+        )
     lines.append("")
 
     if not txns:
@@ -127,9 +135,3 @@ async def render_wallet_history(
     lines.append("")
     lines.append(t("wallet.footer", locale))
     return "\n".join(lines), _keyboard(page, locale)
-
-
-@router.message(Command("wallet"))
-async def cmd_wallet(message: Message, session: AsyncSession, user: User) -> None:
-    text, markup = await render_wallet_history(session, user)
-    await message.answer(text, reply_markup=markup)

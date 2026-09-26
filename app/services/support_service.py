@@ -15,10 +15,15 @@ from app.database.models.user import User
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
+from app.services.staff_guide import ticket_guide, warranty_claim_guide
 from app.utils.errors import UserError
 from app.utils.text import escape_html
 
 logger = logging.getLogger(__name__)
+
+# The category a warranty claim's ticket is filed under. Its topic gets the claim guide (/done,
+# /refund, /reject) instead of the plain ticket one.
+WARRANTY_CLAIM_CATEGORY = "Warranty Claim"
 
 
 async def _send_media(
@@ -150,9 +155,10 @@ async def active_thread(session: AsyncSession, user_id: int) -> ActiveThread | N
 
 
 class NewTicket(NamedTuple):
-    """`reached_staff` is false when the ticket is safely in the database but no human was
-    actually told about it — a misconfigured SUPPORT_GROUP_ID, the bot removed from the group.
-    Callers must not report success to the user on the strength of the row alone."""
+    """`reached_staff` is false when the ticket is safely in the database but its conversation cannot
+    work — a misconfigured SUPPORT_GROUP_ID, the bot removed from the group. Such a ticket is already
+    closed by the time it is returned. Callers must not report success to the user on the strength
+    of the row alone."""
 
     ticket: SupportTicket
     reached_staff: bool
@@ -216,8 +222,19 @@ async def create_ticket(
 
     if support_group_id is None:
         logger.error("SUPPORT_GROUP_ID is unset — ticket %s has nowhere to go.", ticket.ticket_number)
-        body = f"⚠️ SUPPORT_GROUP_ID is unset.\n\n{header}\n\n{escape_html(subject)}"
+        body = f"⚠️ SUPPORT_GROUP_ID is unset.\n\n{header}\n\n{escape_html(subject)}{_UNDELIVERED_NOTE}"
         return await _settle_undelivered(session, ticket, await _notify_admins(bot, body))
+
+    if topic_id is not None:
+        # The topic's very first message is the staff guide, so whoever opens it — including someone
+        # new to support — sees how to answer and which commands exist before the ticket itself.
+        # Best-effort: a missing guide must not fail the ticket; the header below is what decides
+        # whether the group is reachable.
+        guide = warranty_claim_guide() if category == WARRANTY_CLAIM_CATEGORY else ticket_guide()
+        try:
+            await bot.send_message(support_group_id, guide, message_thread_id=topic_id)
+        except TelegramAPIError as exc:
+            logger.warning("Couldn't post the staff guide into topic %s (%s)", topic_id, exc)
 
     try:
         # Identity card first, the user's own words second — two messages, so the opening message
@@ -231,28 +248,48 @@ async def create_ticket(
             support_group_id,
             exc,
         )
-        body = f"⚠️ Support group unreachable ({escape_html(str(exc))}).\n\n{header}\n\n{escape_html(subject)}"
+        body = (
+            f"⚠️ Support group unreachable ({escape_html(str(exc))}).\n\n{header}\n\n"
+            f"{escape_html(subject)}{_UNDELIVERED_NOTE}"
+        )
         return await _settle_undelivered(session, ticket, await _notify_admins(bot, body))
 
     return NewTicket(ticket, True)
 
 
-async def _settle_undelivered(
-    session: AsyncSession, ticket: SupportTicket, reached_staff: bool
-) -> NewTicket:
-    """Decide what to do with a ticket the support group refused.
+# Appended to the admin fallback DM, so whoever reads it knows what the buyer was told and that
+# nothing is waiting on them in the bot — only the group needs fixing.
+_UNDELIVERED_NOTE = (
+    "\n\n<i>The buyer was told support is temporarily unavailable and this ticket was closed, so they "
+    "can open a new one once the support group works again. Fix SUPPORT_GROUP_ID, or add the bot to "
+    "that group as an admin with “Manage Topics”.</i>"
+)
 
-    If the admin fallback DM got through, a human knows about it and the ticket is a live thread
-    like any other. If nothing reached anybody, it is a thread with no other end — and since one
-    live thread is all a user is allowed, leaving it open would lock them out of support entirely
-    on the strength of a message nobody ever received. So it is closed here, immediately, and the
-    caller tells them to try again later. The row and the user's words stay on file either way.
+
+async def _settle_undelivered(
+    session: AsyncSession, ticket: SupportTicket, admins_alerted: bool
+) -> NewTicket:
+    """Close a ticket the support group refused, and report it as not having reached staff.
+
+    It used to stay open whenever the admin fallback DM got through, on the grounds that a human now
+    knew about it. But a ticket is a conversation, not a single message: every follow-up the buyer
+    types is relayed into the group topic, and that is exactly what is broken. So they were told
+    "✅ Ticket is open, reply right here", and the very next reply came back "Support is having a
+    temporary problem" — the failure surfaced one message too late, after they had been promised
+    a working chat.
+
+    Now the truth is told up front. The ticket is closed at once (one live thread per user means an
+    open one would also block them from trying again), the caller shows the buyer the "temporarily
+    unavailable" notice, and the admin DM — when it got through — still carries their words, so the
+    problem itself is not lost. The row stays on file either way.
     """
-    if reached_staff:
-        return NewTicket(ticket, True)
     ticket.status = TicketStatus.CLOSED
     ticket.closed_at = datetime.now(UTC)
-    ticket.close_reason = "Undeliverable: support group and admin fallback both unreachable"
+    ticket.close_reason = (
+        "Undeliverable: support group unreachable — admins alerted by DM"
+        if admins_alerted
+        else "Undeliverable: support group and admin fallback both unreachable"
+    )
     await session.flush()
     return NewTicket(ticket, False)
 
@@ -337,7 +374,7 @@ async def relay_staff_message(
                 for media_id in attachment_file_ids:
                     await _send_media(bot, buyer.chat_id, media_id)
             if text:
-                await bot.send_message(buyer.chat_id, f"💬 <b>Support:</b>\n\n{escape_html(text)}")
+                await bot.send_message(buyer.chat_id, f"🎧 <b>PowerX Support</b>\n\n{escape_html(text)}")
         except TelegramAPIError:
             logger.warning("Couldn't DM user for ticket %s (blocked?)", ticket.ticket_number)
 

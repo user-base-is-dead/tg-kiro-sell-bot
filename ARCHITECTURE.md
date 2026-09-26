@@ -290,7 +290,7 @@ tests/
   unit/  (services, admin-guard source scan)
   integration/ (repositories, stock-claim race test, gift limits)
 deploy/ , Dockerfile , docker-compose.yml
-.env.example , requirements.txt , pyproject.toml , alembic.ini , README.md
+requirements.txt , pyproject.toml , alembic.ini , README.md   (.env stays local, never committed)
 ```
 
 Differences from the original plan worth knowing: there is no `is_owner.py` filter (role lives on the
@@ -484,7 +484,7 @@ command or `Admin*CB` factory isn't in these lists — so this stays honest with
 
 ### `.env` / secrets vs git — answering your earlier concern directly
 
-- `.env` (real `BOT_TOKEN`, `DATABASE_URL`, `ENCRYPTION_KEY`) is **git-ignored** from the start (`.gitignore` includes `.env`, `.env.*`, excluding `.env.example`). Only `.env.example` (placeholder values) is committed.
+- `.env` (real `BOT_TOKEN`, `DATABASE_URL`, `ENCRYPTION_KEY`) is **git-ignored** (`.gitignore` includes `.env` and `.env.*`, with no exceptions). No example env file is committed either — the required keys are listed in `app/core/config.py`.
 - **The database itself is never touched by git.** Only Alembic *migration files* (schema changes) are version-controlled. On the server, `git pull` updates code + migration files only; your actual data (rows) lives in Postgres on that server and is untouched by the pull. You then run `alembic upgrade head` to apply any new migrations — existing data is preserved, not overwritten.
 - Each environment (your local machine, the server) keeps its own `.env` with its own `DATABASE_URL`, so local dev data and production data are always separate databases by construction.
 

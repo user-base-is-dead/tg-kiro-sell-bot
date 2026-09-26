@@ -4,24 +4,21 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.callbacks import LangCB, NavCB
 from app.bot.keyboards.common import with_nav
-from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn
+from app.bot.keyboards.styles import DANGER, PRIMARY, SUCCESS, btn, url_btn
 from app.core.config import get_settings
 from app.locales.i18n import supported_locales, t
 
 _LOCALE_LABEL = {"en": "🇬🇧 English"}
 
-# Green for the ways in (browse, talk to us, put money on the account), red for the two attention
-# grabbers, blue for everything else.
+# Green for the way in (the shop), red for the admin row, blue for everything else — so the eye lands
+# on "buy" first and nothing else competes with it.
 _STYLE = {
     "categories": SUCCESS,
-    "support": SUCCESS,
-    "topup": SUCCESS,
-    "gift": DANGER,
     "admin_panel": DANGER,
-    "profile": PRIMARY,
-    "refer": PRIMARY,
+    "profile": PRIMARY,  # 👛 Wallet — the nav token predates the rename
     "orders": PRIMARY,
     "warranty": PRIMARY,
+    "support": PRIMARY,
 }
 
 
@@ -35,18 +32,24 @@ def main_inline_keyboard(locale: str, *, is_admin: bool) -> InlineKeyboardMarkup
         return btn(t(key, locale), NavCB(target=target).pack(), _STYLE[target])
 
     rows = [
-        [_btn("menu.products", "categories"), _btn("menu.support", "support")],
-        [_btn("menu.profile", "profile"), _btn("menu.topup", "topup")],
-        [_btn("menu.gift", "gift"), _btn("menu.warranty", "warranty")],
-        [_btn("menu.orders", "orders"), _btn("menu.refer", "refer")],
+        [_btn("menu.products", "categories")],
+        [_btn("menu.wallet", "profile"), _btn("menu.orders", "orders")],
+        [_btn("menu.warranty", "warranty"), _btn("menu.support", "support")],
     ]
-    # A url button, not a callback one: it opens the group directly instead of costing the user a
-    # round trip through the bot. Skipped when no group is configured, so the row is never dead.
-    group_url = get_settings().community_group_url.strip()
-    if group_url:
-        rows.append(
-            [InlineKeyboardButton(text=t("menu.community", locale), url=group_url, style=PRIMARY)]
+    # Url buttons, not callback ones: they open the channel/group directly instead of costing the
+    # user a round trip through the bot. Each is skipped when its link is not configured, so the row
+    # is never dead — and disappears entirely when neither is.
+    settings = get_settings()
+    links = [
+        url_btn(t(key, locale), url, PRIMARY)
+        for key, url in (
+            ("menu.channel", settings.community_channel_url.strip()),
+            ("menu.community", settings.community_group_url.strip()),
         )
+        if url
+    ]
+    if links:
+        rows.append(links)
     if is_admin:
         rows.append([_btn("menu.admin_panel", "admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

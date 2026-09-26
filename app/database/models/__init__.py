@@ -3,7 +3,6 @@ from app.database.models.audit import AuditLog
 from app.database.models.broadcast import Broadcast, BroadcastDelivery, BroadcastStatus, DeliveryStatus
 from app.database.models.catalog import Category, FulfillmentMode, Product, ProductStatus, StockItem, StockStatus
 from app.database.models.crypto import CryptoPayment
-from app.database.models.gift import GiftCode, GiftRedemption, GiftStatus
 from app.database.models.interaction_state import InteractionState
 from app.database.models.order import (
     Delivery,
@@ -16,7 +15,6 @@ from app.database.models.order import (
     WarrantyStatus,
 )
 from app.database.models.order_event import OrderEvent, OrderEventActor, OrderEventKind
-from app.database.models.referral import Referral
 from app.database.models.settings import BotSetting
 from app.database.models.support import SupportTicket, TicketMessage, TicketPriority, TicketStatus
 from app.database.models.user import User, UserStatus
@@ -37,9 +35,6 @@ __all__ = [
     "StockItem",
     "StockStatus",
     "CryptoPayment",
-    "GiftCode",
-    "GiftRedemption",
-    "GiftStatus",
     "InteractionState",
     "Delivery",
     "FundingSource",
@@ -52,7 +47,6 @@ __all__ = [
     "RefundState",
     "Warranty",
     "WarrantyStatus",
-    "Referral",
     "BotSetting",
     "SupportTicket",
     "TicketMessage",

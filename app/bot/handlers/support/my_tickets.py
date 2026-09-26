@@ -64,7 +64,7 @@ async def _render_tickets(session: AsyncSession, user: User, page_num: int = 1) 
     if page.total_pages > 1:
         # Slotted into the heading rather than appended, so the page counter can't be mistaken for
         # part of the description underneath it.
-        title = title.replace("<b>MY TICKETS</b>", f"<b>MY TICKETS ({page.clamped_page}/{page.total_pages})</b>", 1)
+        title = title.replace("<b>My Tickets</b>", f"<b>My Tickets ({page.clamped_page}/{page.total_pages})</b>", 1)
 
     return title, with_nav(rows, user.locale, back_target="support")
 

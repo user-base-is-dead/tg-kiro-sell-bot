@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import NavCB, OrderCB
+from app.bot.filters.menu_button import menu_labels
 from app.bot.states.checkout_form import CheckoutForm
 from app.bot.delivery_notes import delivery_note
 from app.bot.keyboards.common import nav_row
@@ -70,20 +71,20 @@ async def render_quantity_prompt(
 
     price = format_minor(product.price_minor, product.currency)
     lines = [
-        "🔢 <b>How many?</b>",
+        "🔢 <b>Choose quantity</b>",
         "",
         f"{product.name}",
-        f"💰 {price} each",
+        f"💰 {price} per item",
         "",
-        "Send a whole number — <code>1</code>, <code>2</code>, <code>3</code>. "
-        "Nothing else: no <code>1.5</code>, no words.",
+        "Type how many you want as a whole number, like <code>1</code>, <code>2</code> or "
+        "<code>3</code>. No decimals, no words.",
         "",
-        f"📦 You can take up to <b>{cap}</b> right now.",
+        f"📦 Available right now: <b>{cap}</b>",
     ]
     rows = [
         [
             btn(
-                "1️⃣ Just one",
+                "1️⃣ Buy 1",
                 OrderCB(action="pay", product_id=str(product.id), qty=1).pack(),
                 SUCCESS,
             )
@@ -123,7 +124,7 @@ async def render_payment_choice(
     total = format_minor(total_minor, product.currency)
     balance = format_minor(wallet.balance_minor, wallet.currency)
     lines = [
-        "🛒 <b>Choose Payment Method</b>",
+        "💳 <b>How would you like to pay?</b>",
         "",
         f"{product.name}",
     ]
@@ -131,30 +132,29 @@ async def render_payment_choice(
     if qty > 1:
         lines.append(f"🔢 Quantity: <b>{qty}</b> × {price}")
     lines += [
-        f"💰 Total: {total}",
-        f"💳 Wallet balance: {balance}",
+        f"<blockquote>💰 Total: <b>{total}</b>\n👛 Wallet balance: {balance}</blockquote>",
         "",
     ]
     if covered:
         lines.append(
-            "Your wallet covers this. Pay from it, or pay the full price with crypto to keep "
-            "your balance untouched."
+            "Your balance covers this. Pay from your wallet, or pay the full amount in crypto and "
+            "keep your balance as it is."
         )
     else:
         short = format_minor(shortfall_minor, product.currency)
-        lines.append(f"⚠️ You are {short} short. Top up with crypto to cover it.")
+        lines.append(f"⚠️ You're {short} short. Pay with crypto to cover the difference.")
 
     rows = [
         [
             btn(
-                "💳 Pay from Wallet" if covered else f"💳 Wallet ({balance})",
+                "👛 Pay from Wallet" if covered else f"👛 Wallet ({balance})",
                 OrderCB(action="wallet", product_id=str(product.id), qty=qty).pack(),
                 SUCCESS if covered else NEUTRAL,
             )
         ],
         [
             btn(
-                "💎 Pay with Crypto (USDT)",
+                "💎 Pay with USDT",
                 OrderCB(action="crypto", product_id=str(product.id), qty=qty).pack(),
                 PRIMARY,
             )
@@ -202,7 +202,7 @@ async def render_checkout_confirm(
         remaining = await stock_hold_service.seconds_remaining(session, product.id, user.id)
     # No hold, no countdown: a "payment expires in 0m 0s" line on a manual product would be a
     # deadline the buyer cannot miss and does not have.
-    countdown = f"\n\n⏱️ <b>Payment expires in:</b> {remaining // 60}m {remaining % 60}s" if remaining else ""
+    countdown = f"\n\n⏱️ <b>Reserved for you:</b> {remaining // 60}m {remaining % 60}s to pay" if remaining else ""
 
     name = product.name if qty == 1 else f"{product.name}  ×{qty}"
     text = (
@@ -254,7 +254,11 @@ class _NotANavigationPress(Filter):
         if text.startswith("/"):
             return False
         locale = user.locale if (user := data.get("user")) else "en"
-        return text not in {t(f"menu.{key}", locale) for key in _load(locale).get("menu", {})}
+        # Retired labels too: a client still showing the old panel sends those, and they are just as
+        # much a way out as today's.
+        return text not in {
+            label for key in _load(locale).get("menu", {}) for label in menu_labels(f"menu.{key}", locale)
+        }
 
 
 @router.message(CheckoutForm.quantity, _NotANavigationPress())
@@ -287,12 +291,14 @@ async def on_quantity_typed(message: Message, state: FSMContext, session: AsyncS
                 await state.clear()
                 await dm_relay(message, session, user)
                 return
-        await message.answer("Send a plain whole number — <code>1</code>, <code>2</code>, <code>3</code>.")
+        await message.answer(
+            "Please send a whole number, like <code>1</code>, <code>2</code> or <code>3</code>."
+        )
         return
 
     qty = int(raw)
     if qty < 1:
-        await message.answer("Send at least <code>1</code>.")
+        await message.answer("The minimum is <code>1</code>.")
         return
 
     # The cap is re-read from the shelf, not taken from what the prompt said: minutes may have
@@ -309,7 +315,7 @@ async def on_quantity_typed(message: Message, state: FSMContext, session: AsyncS
         await message.answer(t("errors.out_of_stock", user.locale))
         return
     if qty > cap:
-        await message.answer(f"Only <b>{cap}</b> available right now. Send <code>{cap}</code> or less.")
+        await message.answer(f"Only <b>{cap}</b> in stock right now — send <code>{cap}</code> or less.")
         return
 
     await state.clear()
@@ -407,7 +413,7 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
         session, user.id, invoice_minor / 100, user.locale, purchase_product_id=product.id
     )
     await query.message.edit_text(
-        text + "\n\n🛒 <b>After this confirms, press Buy Now again to complete the purchase.</b>",
+        text + "\n\n⚡ <b>Once the payment confirms, tap Buy Now again to finish your order.</b>",
         reply_markup=markup,
     )
     await query.answer()

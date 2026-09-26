@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminTicketCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.filters.staff import IsStaff
 from app.bot.keyboards.styles import NEUTRAL, PRIMARY, btn
 from app.core.config import get_settings
 from app.database.models.support import TicketStatus
@@ -19,6 +20,12 @@ from app.utils.errors import UserError
 router = Router(name="admin.support")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
+
+# /close is teamwork rather than administration: anyone in the support or orders group can run it in
+# a topic there, admin or not (see app/bot/filters/staff.py). The ticket list and its buttons above
+# stay admin-only.
+staff_router = Router(name="admin.support.staff")
+staff_router.message.filter(IsStaff())
 
 
 def _list_keyboard(tickets: list) -> InlineKeyboardMarkup:
@@ -64,11 +71,11 @@ async def _close_order_topic(message: Message) -> None:
         pass
 
 
-# Registered on the admin router, which main.py includes BEFORE the relay router. That ordering is
+# Registered on the staff router, which main.py includes BEFORE the relay router. That ordering is
 # the whole point: aiogram stops at the first matching handler, so "/close" is consumed here and
 # never reaches group_relay — which would otherwise mirror the literal text "/close" to the user
 # as though a human had said it.
-@router.message(Command("close"))
+@staff_router.message(Command("close"))
 async def close_from_topic(message: Message, session: AsyncSession, user) -> None:
     settings = get_settings()
     in_support = settings.support_group_id is not None and message.chat.id == settings.support_group_id
@@ -101,7 +108,7 @@ async def close_from_topic(message: Message, session: AsyncSession, user) -> Non
         await message.reply(f"{ticket.ticket_number} is already closed.")
         return
 
-    await close_ticket(session, ticket_id=ticket.id, reason=f"Closed by admin {user.telegram_id}")
+    await close_ticket(session, ticket_id=ticket.id, reason=f"Closed by staff {user.telegram_id}")
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id, action="ticket.close", target_type="ticket", target_id=str(ticket.id)
     )

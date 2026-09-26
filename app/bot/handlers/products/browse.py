@@ -20,7 +20,7 @@ from app.services.catalog_service import compute_display_status, stock_detail_li
 from app.services import stock_hold_service
 from app.utils.pagination import Page
 from app.utils.status_emoji import STATUS_EMOJI, STATUS_LABEL
-from app.utils.text import PAD
+from app.utils.text import PAD, escape_html
 
 router = Router(name="products.browse")
 
@@ -32,10 +32,14 @@ async def render_categories(session: AsyncSession, locale: str) -> tuple[str, ob
     # Products with no category are real stock, not an empty store — they render above the folders.
     loose = await ProductRepo(session).list_uncategorized()
     if not categories and not loose:
-        return "🛍️ <b>STORE</b>\n\n💳 Premium products available now! Pay with crypto (💎 USDT/BNB) and get instant delivery. Browse categories or visit /products to see all available items.", category_grid([], locale)
+        return (
+            "🛒 <b>PowerX Shop</b>\n\n"
+            "Nothing is listed right now — fresh stock is on its way. Check back soon, or keep an "
+            "eye on our channel for the next drop."
+        ), category_grid([], locale)
     loose_views = [await compute_display_status(session, p) for p in loose]
-    heading = "Choose a category:" if categories else "Available now:"
-    return f"🛍️ <b>STORE</b>\n\n{heading}\n{PAD}", category_grid(categories, locale, loose=loose_views)
+    heading = "Pick a category 👇" if categories else "In stock now 👇"
+    return f"🛒 <b>PowerX Shop</b>\n\n{heading}\n{PAD}", category_grid(categories, locale, loose=loose_views)
 
 
 async def render_product_list(
@@ -51,17 +55,17 @@ async def render_product_list(
     products = await repo.list_by_category(category_id, offset=page.offset, limit=PAGE_SIZE)
     views = [await compute_display_status(session, p) for p in products]
 
-    emoji = category.emoji or "🛍️"
+    emoji = category.emoji or "🛒"
     if not views:
-        text = f"{emoji} <b>{category.name.upper()}</b>\n\nNo products in this category yet."
+        text = f"{emoji} <b>{escape_html(category.name)}</b>\n\nNothing in this category yet — check back soon."
     else:
         lines = "\n".join(
-            f"{STATUS_EMOJI[v.display_status]} {v.product.name} — "
+            f"{STATUS_EMOJI[v.display_status]} {escape_html(v.product.name)} — "
             f"{v.product.price_minor / 100:.2f} {v.product.currency}"
             + (f" · <b>{left}</b>" if (left := stock_label(v)) else "")
             for v in views
         )
-        text = f"{emoji} <b>{category.name.upper()}</b>\n\n{lines}"
+        text = f"{emoji} <b>{escape_html(category.name)}</b>\n\n<blockquote>{lines}</blockquote>"
 
     return f"{text}\n{PAD}", product_list(views, category_id, page, locale)
 
@@ -74,7 +78,7 @@ async def render_product_detail(session: AsyncSession, product_id: int, locale: 
     view = await compute_display_status(session, product)
     status_line = f"{STATUS_EMOJI[view.display_status]} {STATUS_LABEL[view.display_status]}"
     if view.display_status.value == "LOW_STOCK":
-        status_line += f"\nOnly {view.available_stock} remaining!"
+        status_line += f" — only {view.available_stock} left"
 
     # Holds are per credential now, so somebody else holding one says nothing about whether this
     # shopper can buy — the page used to announce "On hold" to everyone the moment any buyer entered
@@ -84,26 +88,30 @@ async def render_product_detail(session: AsyncSession, product_id: int, locale: 
     if user_id is not None:
         remaining = await stock_hold_service.seconds_remaining(session, product_id, user_id)
         if remaining > 0:
-            hold_line = f"\n🔒 <b>Your payment: {remaining // 60}m {remaining % 60}s remaining</b>"
+            hold_line = f"\n🔒 <b>Reserved for you: {remaining // 60}m {remaining % 60}s left to pay</b>"
 
     if not hold_line and view.display_status is ProductStatus.ON_HOLD:
         hold_line = (
-            "\n\n⏳ <b>Someone is checking out with the last one.</b>\n"
-            "If their payment isn't completed within 5 minutes it becomes available again "
-            "automatically — check back shortly. If it completes, this product is sold out."
+            "\n\n⏳ <b>The last one is in someone's checkout.</b>\n"
+            "If they don't pay within 5 minutes it's released automatically — check back shortly. "
+            "If they do, this product is sold out."
         )
 
-    stock_line = stock_detail_line(view)
+    # One card for the facts, so price, stock and warranty read as a block instead of loose lines.
+    facts = [f"💰 Price: <b>{product.price_minor / 100:.2f} {product.currency}</b>"]
+    stock_line = stock_detail_line(view).rstrip("\n")
+    if stock_line:
+        facts.append(stock_line)
+    if product.warranty_days:
+        facts.append(f"🛡️ Warranty: {product.warranty_days} days")
+    facts_block = "\n".join(facts)
+
     text = (
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🛍️ <b>{product.name.upper()}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"{product.description or 'Premium digital product.'}\n\n"
-        f"💰 Price: {product.price_minor / 100:.2f} {product.currency}\n"
-        f"{stock_line}"
-        + (f"🛡️ Warranty: {product.warranty_days} Days\n" if product.warranty_days else "")
-        + f"\n{status_line}{hold_line}"
-        + f"\n{PAD}"
+        f"🛒 <b>{escape_html(product.name)}</b>\n\n"
+        f"{escape_html(product.description) or 'Digital product from PowerX Digital.'}\n\n"
+        f"<blockquote>{facts_block}</blockquote>\n\n"
+        f"{status_line}{hold_line}"
+        f"\n{PAD}"
     )
     return text, product_detail(product, view, locale, product.category_id)
 

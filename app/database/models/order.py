@@ -42,14 +42,17 @@ class RefundState(str, enum.Enum):
     """How far the money owed on a declined order has got.
 
     NONE is every order that was never refunded, including live ones. PARKED means the amount is
-    sitting in the buyer's Refund Wallet, visible to them and to staff, spendable by nobody. SETTLED
-    means an admin has accounted for all of it — paid out on chain, moved into the spendable wallet,
-    or some of each. There is deliberately no automatic transition into SETTLED: a payout happens
-    outside this bot, so only a human can say it happened.
+    sitting in the buyer's Refund Wallet, visible to them and to staff, spendable by nobody. FROZEN
+    means staff chose to hold it in the Frozen Wallet for review instead — visible, but neither
+    spendable nor refundable; releasing it moves the money to the Refund Wallet and the order to
+    PARKED. SETTLED means an admin has accounted for all of it — paid out on chain, moved into the
+    spendable wallet, or some of each. There is deliberately no automatic transition into SETTLED: a
+    payout happens outside this bot, so only a human can say it happened.
     """
 
     NONE = "NONE"
     PARKED = "PARKED"
+    FROZEN = "FROZEN"
     SETTLED = "SETTLED"
 
 

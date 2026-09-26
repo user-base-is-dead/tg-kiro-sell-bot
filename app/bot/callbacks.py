@@ -65,10 +65,14 @@ class AdminOrderCB(CallbackData, prefix="aord"):
 
 class AdminRefundCB(CallbackData, prefix="aref"):
     # "list" is the queue of everyone owed money; "view" is one buyer's settle screen; "payout"
-    # records what was sent on chain; "move" turns parked money into spendable balance.
+    # records what was sent on chain; "move" turns parked money into spendable balance; "unfreeze"
+    # releases the whole Frozen Wallet into the Refund Wallet; "sanction" blocks a typed amount of the
+    # Refund Wallet and "release" lifts it again.
     # No "moveall": it was the same action as "move" with the amount decided for you, and having both
     # made one decision look like two. Both prompts take a typed amount now.
-    action: str  # "list" | "view" | "payout" | "move"
+    # Keep action names short: the packed data carries a 36-character order id and must fit Telegram's
+    # 64-byte limit.
+    action: str  # "list" | "view" | "payout" | "move" | "unfreeze" | "sanction" | "release"
     id: str = ""  # user id
     order_id: str = ""
     # Where the settle screen was opened FROM, so its Back button returns there instead of always
@@ -80,12 +84,6 @@ class AdminRefundCB(CallbackData, prefix="aref"):
 
 class AdminPaymentCB(CallbackData, prefix="apay"):
     action: str  # "list" | "approve" | "reject"
-    id: str = ""
-
-
-class AdminGiftCB(CallbackData, prefix="agift"):
-    # "delete" only asks; "delete_ok" is the one that removes the row.
-    action: str  # "list" | "add" | "view" | "toggle" | "additems" | "delete" | "delete_ok"
     id: str = ""
 
 

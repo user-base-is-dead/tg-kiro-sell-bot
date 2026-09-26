@@ -66,7 +66,10 @@ async def _render_detail(session: AsyncSession, order_id: str, locale: str) -> t
 
     if order.refund_state is not RefundState.NONE:
         amount = format_minor(order.refund_amount_minor or 0, order.currency)
-        key = "orders.refund_parked" if order.refund_state is RefundState.PARKED else "orders.refund_settled"
+        key = {
+            RefundState.PARKED: "orders.refund_parked",
+            RefundState.FROZEN: "orders.refund_frozen",
+        }.get(order.refund_state, "orders.refund_settled")
         lines += ["", t(key, locale, amount=amount)]
         if order.funding_source is FundingSource.CRYPTO and order.refund_state is RefundState.PARKED:
             lines.append(t("orders.refund_crypto_note", locale))

@@ -58,3 +58,10 @@ def configure_logging(level: str = "INFO") -> None:
 
     # aiogram / httpx are noisy at INFO with full update payloads
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+
+    # Every SQL statement, only when asked for with LOG_LEVEL=DEBUG. It used to be on in every
+    # non-production run through the engine's `echo`, which printed each statement twice (its own
+    # handler plus this one), buried real errors under hundreds of lines, and filled bot.log fast
+    # enough to rotate the tracebacks worth keeping out of it.
+    if root.level <= logging.DEBUG:
+        logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)

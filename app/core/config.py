@@ -25,17 +25,21 @@ class Settings(BaseSettings):
     #
     # A delivered order's topic closes itself. A cancelled or refunded one stays open and becomes a
     # dispute the buyer is connected to — their DMs relay into it and staff replies come back out —
-    # until an admin runs /close in the thread.
+    # until someone in the orders group runs /close in the thread.
     #
     # Unset means no order threads are opened at all: the bot works exactly as before and a refund
     # falls back to an ordinary ticket in the support group, so this is safe to leave blank.
     orders_group_id: int | None = Field(default=None, alias="ORDERS_GROUP_ID")
     log_chat_id: int | None = Field(default=None, alias="LOG_CHAT_ID")
 
-    # Public community group shown on the welcome screen. Blank hides the link and its button
-    # entirely, so a deployment without a group never advertises a dead one.
+    # Official PowerX links shown on the welcome screen and as buttons under the main menu. Each one
+    # is independent: blank hides that link and its button entirely, so a deployment never
+    # advertises a dead one.
+    community_channel_url: str = Field(
+        default="https://t.me/thepowerxstore", alias="COMMUNITY_CHANNEL_URL"
+    )
     community_group_url: str = Field(
-        default="https://t.me/exonmarketplace", alias="COMMUNITY_GROUP_URL"
+        default="https://t.me/thepowerxmarketplace", alias="COMMUNITY_GROUP_URL"
     )
 
     default_currency: str = Field(default="USD", alias="DEFAULT_CURRENCY")

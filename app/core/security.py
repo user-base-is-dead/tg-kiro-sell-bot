@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import secrets
-import string
 from functools import lru_cache
 
 from cryptography.fernet import Fernet
@@ -49,6 +47,10 @@ EVENT_PREFIXES: dict[str, str] = {
     "DELIVERED": "DLV",
     "DECLINED": "DEC",
     "REFUND_PARKED": "RFD",
+    "REFUND_FROZEN": "FRZ",
+    "REFUND_UNFROZEN": "UFZ",
+    "REFUND_SANCTIONED": "SNC",
+    "SANCTION_RELEASED": "SRL",
     "REFUND_PAID_OUT": "PAY",
     "REFUND_MOVED": "MOV",
     "TICKET_OPENED": "TKT",
@@ -64,16 +66,3 @@ def new_event_number(kind: str) -> str:
     mint an ID would take down the decline it was recording.
     """
     return f"{EVENT_PREFIXES.get(kind, 'EVT')}-" + secrets.token_hex(3).upper()
-
-
-_GIFT_ALPHABET = string.ascii_uppercase + string.digits
-
-
-def new_gift_code() -> str:
-    return "".join(secrets.choice(_GIFT_ALPHABET) for _ in range(12))
-
-
-def hash_gift_code(code: str) -> str:
-    """Codes are stored hashed (like passwords) — a DB dump doesn't hand out redeemable
-    codes. Only the last 4 characters are kept in the clear, for admin identification."""
-    return hashlib.sha256(code.encode()).hexdigest()

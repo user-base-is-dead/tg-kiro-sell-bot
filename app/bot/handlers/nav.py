@@ -11,7 +11,7 @@ from app.bot.callbacks import NavCB
 from app.bot.filters.is_admin import is_admin_user
 from app.bot.handlers.orders.history import render_history
 from app.bot.handlers.products.browse import render_categories, render_product_list
-from app.bot.handlers.user.profile import render_profile_screen
+from app.bot.handlers.user.profile import render_wallet_screen
 from app.bot.handlers.user.refunds import render_refunds
 from app.bot.handlers.user.wallet_history import render_wallet_history
 from app.bot.keyboards.main_menu import main_inline_keyboard
@@ -44,7 +44,7 @@ async def on_nav(
     target = callback_data.target
 
     if target == "home":
-        # Back/Home is the documented way out of a half-finished form (top-up, gift code, ticket
+        # Back/Home is the documented way out of a half-finished form (top-up amount, ticket
         # subject), so it has to drop the FSM state as well — otherwise the user lands on the menu
         # but their next message is still swallowed by the form they thought they left.
         await state.clear()
@@ -73,8 +73,10 @@ async def on_nav(
         await query.answer()
         return
 
+    # "profile" is the 👛 Wallet screen — the token predates the rename and is kept so buttons already
+    # sitting in chats, and every Back that returns to it, still land there.
     if target == "profile":
-        text, markup = await render_profile_screen(session, user)
+        text, markup = await render_wallet_screen(session, user)
         await query.message.edit_text(text, reply_markup=markup)
         await query.answer()
         return

@@ -9,7 +9,7 @@ from aiogram.types import InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminRefundCB
-from app.bot.filters.is_admin import IsAdmin
+from app.bot.filters.staff import IsStaff
 from app.bot.keyboards.styles import SUCCESS, btn
 from app.database.models.order import Warranty, WarrantyStatus
 from app.database.models.user import User
@@ -33,7 +33,9 @@ from app.utils.time import as_utc
 logger = logging.getLogger(__name__)
 
 router = Router(name="admin.warranty_claims")
-router.message.filter(IsAdmin())
+# /done, /refund and /reject are typed in the claim's own topic, so whoever is in the support group
+# can settle a claim — admins can still do it from anywhere (see app/bot/filters/staff.py).
+router.message.filter(IsStaff())
 
 
 async def _notify_customer(message: Message, session: AsyncSession, warranty: Warranty, text: str) -> None:
@@ -97,10 +99,10 @@ async def approve_warranty_claim(message: Message, session: AsyncSession, user: 
             message,
             session,
             warranty,
-            "✅ Your warranty claim has been <b>RESOLVED</b>.\n\n"
-            "The original warranty period had already ended by the time it was resolved, so no "
-            "further warranty time applies to this item.\n\n"
-            "Need anything else? Contact Customer Support.",
+            "✅ <b>Warranty claim resolved</b>\n\n"
+            "The original warranty had already ended by the time this was resolved, so no further "
+            "warranty time applies to this item.\n\n"
+            "Need anything else? Open 🎧 Support.",
         )
         await message.answer(
             f"✅ Claim #{warranty.id} resolved. Original warranty had already expired — 0 time granted."
@@ -112,11 +114,11 @@ async def approve_warranty_claim(message: Message, session: AsyncSession, user: 
         message,
         session,
         warranty,
-        "✅ Your warranty claim has been <b>RESOLVED</b>.\n\n"
-        f"⏱️ Warranty restored: <b>{granted}</b>\n"
-        f"⏳ New expiry: {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC\n\n"
+        "✅ <b>Warranty claim resolved</b>\n\n"
+        f"<blockquote>⏱️ Cover restored: <b>{granted}</b>\n"
+        f"⏳ New expiry: {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC</blockquote>\n\n"
         "The unused time from your original warranty now covers the replacement.\n"
-        "If you need further assistance, contact Customer Support.",
+        "Need anything else? Open 🎧 Support.",
     )
     await message.answer(
         f"✅ Claim #{warranty.id} resolved. Granted {granted}, new expiry "
@@ -204,7 +206,7 @@ async def refund_warranty_claim(message: Message, session: AsyncSession, user: U
             message,
             session,
             warranty,
-            "🛡️ Your warranty claim has been <b>CLOSED WITH A REFUND</b>.\n\n"
+            "🛡️ <b>Warranty claim closed with a refund</b>\n\n"
             f"Reason: {reason}\n\n"
             "Nothing had been charged for this item, so there is nothing to pay back. The warranty "
             "on it has ended.\n"
@@ -220,13 +222,13 @@ async def refund_warranty_claim(message: Message, session: AsyncSession, user: U
         message,
         session,
         warranty,
-        "💸 Your warranty claim has been <b>REFUNDED</b>.\n\n"
+        "💸 <b>Warranty claim refunded</b>\n\n"
         f"Reason: {reason}\n\n"
-        f"💰 <b>{money}</b> has been moved to your <b>Refund Balance</b>.\n"
-        "It's held separately from your spendable wallet — our team settles it with you rather than "
+        f"💰 <b>{money}</b> has been moved to your <b>Refund Wallet</b>.\n"
+        "It's kept apart from your spendable balance — our team settles it with you instead of "
         "turning it into shop credit on its own.\n\n"
         "🛡️ The warranty on this item has ended, because you've been paid back for it.\n\n"
-        "✍️ <b>Type your message here</b> — this chat is still open with our team until the money "
+        "✍️ <b>Type your message here</b> — this chat stays open with our team until the money "
         "is settled.",
     )
     await message.answer(
@@ -277,10 +279,10 @@ async def reject_warranty_claim(message: Message, session: AsyncSession, user: U
             message,
             session,
             warranty,
-            "❌ Your warranty claim has been <b>REJECTED</b>.\n\n"
+            "❌ <b>Warranty claim declined</b>\n\n"
             f"Reason: {reason}\n\n"
             "The warranty period for this item has also ended.\n"
-            "If you believe this is incorrect, contact Customer Support.",
+            "If you think this is wrong, open 🎧 Support.",
         )
         await message.answer(f"✅ Claim #{warranty.id} rejected. Warranty had already expired.")
         return
@@ -290,10 +292,10 @@ async def reject_warranty_claim(message: Message, session: AsyncSession, user: U
         message,
         session,
         warranty,
-        "❌ Your warranty claim has been <b>REJECTED</b>.\n\n"
+        "❌ <b>Warranty claim declined</b>\n\n"
         f"Reason: {reason}\n\n"
-        f"⏱️ Your warranty is still active with <b>{left}</b> remaining "
-        f"(expires {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC).\n"
-        "If you believe this is incorrect, contact Customer Support.",
+        f"⏱️ Your warranty is still active with <b>{left}</b> left "
+        f"(ends {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC).\n"
+        "If you think this is wrong, open 🎧 Support.",
     )
     await message.answer(f"✅ Claim #{warranty.id} rejected. Warranty stays active, {left} remaining.")

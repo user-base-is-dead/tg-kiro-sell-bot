@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import AdminOrderCB, AdminRefundCB, NavCB
 from app.bot.filters.is_admin import IsAdmin
+from app.bot.filters.staff import IsStaff
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
 from app.bot.states.order_decline_form import OrderDeclineForm, OrderSearchForm
@@ -34,6 +35,14 @@ router = Router(name="admin.orders")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
+# Fulfil and Decline — the two buttons on an order's "awaiting fulfilment" message in its topic —
+# with their prompts, Back buttons and the messages that answer them. Anyone in the orders group can
+# work an order from there, admin or not (see app/bot/filters/staff.py); admins can still do it from
+# the dossier in their private chat. Everything else in this module stays admin-only.
+staff_router = Router(name="admin.orders.staff")
+staff_router.message.filter(IsStaff())
+staff_router.callback_query.filter(IsStaff())
+
 PAGE_SIZE = 10
 
 STATUS_EMOJI = {
@@ -51,6 +60,10 @@ _EVENT_LABEL = {
     OrderEventKind.DELIVERED: "📬 Delivered",
     OrderEventKind.DECLINED: "🚫 Declined",
     OrderEventKind.REFUND_PARKED: "💰 Refund parked",
+    OrderEventKind.REFUND_FROZEN: "🧊 Money frozen",
+    OrderEventKind.REFUND_UNFROZEN: "🔓 Unfrozen → Refund Wallet",
+    OrderEventKind.REFUND_SANCTIONED: "🚫 Refund sanctioned",
+    OrderEventKind.SANCTION_RELEASED: "✅ Sanction released → Refund Wallet",
     OrderEventKind.REFUND_PAID_OUT: "📤 Refund paid out",
     OrderEventKind.REFUND_MOVED: "➡️ Moved to wallet",
     OrderEventKind.TICKET_OPENED: "🎫 Ticket opened",
@@ -92,7 +105,7 @@ def _detail_keyboard(order) -> InlineKeyboardMarkup:
     # declined. Cancelled and failed orders are past it in the other direction.
     if order.status in (OrderStatus.PENDING, OrderStatus.PROCESSING):
         rows.append(
-            [btn("🚫 Decline & Refund", AdminOrderCB(action="decline", id=order.id).pack(), DANGER)]
+            [btn("🚫 Decline", AdminOrderCB(action="decline", id=order.id).pack(), DANGER)]
         )
     if order.refund_state is RefundState.PARKED:
         rows.append(
@@ -101,6 +114,16 @@ def _detail_keyboard(order) -> InlineKeyboardMarkup:
                     "💸 Settle refund",
                     AdminRefundCB(action="view", id=str(order.user_id), order_id=order.id).pack(),
                     SUCCESS,
+                )
+            ]
+        )
+    elif order.refund_state is RefundState.FROZEN:
+        rows.append(
+            [
+                btn(
+                    "🧊 Frozen money — open to unfreeze",
+                    AdminRefundCB(action="view", id=str(order.user_id), order_id=order.id).pack(),
+                    PRIMARY,
                 )
             ]
         )
@@ -117,7 +140,8 @@ def _list_text(count: int) -> str:
         "moment payment clears, so it never needs you.\n\n"
         "Tap an order to see what was bought, then:\n"
         "✅ <b>Fulfill</b> — send the buyer their content and mark it delivered\n"
-        "🚫 <b>Decline &amp; Refund</b> — say why, and park the money in their Refund Wallet\n\n"
+        "🚫 <b>Decline</b> — say why, then choose where the money goes: ↩️ Refund Wallet or 🧊 "
+        "Frozen Wallet\n\n"
         "An empty list is the healthy state. Use 🔍 <b>Search</b> or 📜 <b>All orders</b> to reach "
         "anything already delivered or cancelled."
     )
@@ -200,6 +224,7 @@ async def render_dossier(session: AsyncSession, order_id: str) -> tuple[str, Inl
         amount = format_minor(order.refund_amount_minor or 0, order.currency)
         label = {
             RefundState.PARKED: f"🟠 <b>{amount}</b> parked in their Refund Wallet — not settled yet",
+            RefundState.FROZEN: f"🧊 <b>{amount}</b> frozen in their Frozen Wallet — release it from 💸 Refund Wallets",
             RefundState.SETTLED: f"🟢 <b>{amount}</b> refunded and settled",
         }[order.refund_state]
         lines += ["", "💸 <b>Refund</b>", label]
@@ -388,10 +413,10 @@ async def do_search(message: Message, state: FSMContext, session: AsyncSession) 
     )
 
 
-# ---- Decline & Refund ----
+# ---- Decline ----
 
 
-@router.callback_query(AdminOrderCB.filter(F.action.in_(["decline", "cancel"])))
+@staff_router.callback_query(AdminOrderCB.filter(F.action.in_(["decline", "cancel"])))
 async def prompt_decline(
     query: CallbackQuery, callback_data: AdminOrderCB, state: FSMContext, session: AsyncSession
 ) -> None:
@@ -421,26 +446,26 @@ async def prompt_decline(
     await state.update_data(order_id=order.id, thread_id=query.message.message_thread_id)
 
     paid_by = "💎 crypto (USDT, on chain)" if order.funding_source is FundingSource.CRYPTO else "💳 wallet balance"
-    aftermath = (
-        "They paid on chain, so the refund can't be reversed automatically — a refund chat opens and "
-        "they're asked for a BEP-20 address."
-        if order.funding_source is FundingSource.CRYPTO
-        else "A refund chat opens so you can settle it with them."
-    )
+    amount = format_minor(order.total_minor, order.currency)
+    charged = order.payment_txn_id is not None and order.total_minor > 0
 
     body = (
-        "🚫 <b>Decline &amp; Refund</b>\n\n"
-        f"🛒 <code>{order.order_number}</code> · {format_minor(order.total_minor, order.currency)}\n"
+        "🚫 <b>Decline order</b>\n\n"
+        f"🛒 <code>{order.order_number}</code> · {amount}\n"
         f"Paid by: {paid_by}\n\n"
         "<b>Send the reason for declining this order.</b>\n"
         "The buyer reads it word for word, and it's saved against the order forever — it shows up in "
         "their order history and in your search results.\n\n"
-        f"When you send it:\n"
-        f"• the order is cancelled and any reserved stock goes back on the shelf\n"
-        f"• {format_minor(order.total_minor, order.currency)} is parked in their <b>Refund Wallet</b> "
-        "(held separately, not spendable)\n"
-        f"• {aftermath}\n\n"
-        "Press <b>Back</b> to leave it alone — the order stays exactly as it is, still waiting for "
+        "When you send it:\n"
+        "• the order is cancelled and any reserved stock goes back on the shelf\n"
+        + (
+            f"• you choose where the {amount} goes: <b>↩️ Refund Wallet</b> (settle it with them "
+            "later) or <b>🧊 Frozen Wallet</b> (on hold — they see it but can't spend it or get it "
+            "back)\n"
+            if charged
+            else "• nothing was charged, so there is no money to place\n"
+        )
+        + "\nPress <b>Back</b> to leave it alone — the order stays exactly as it is, still waiting for "
         "you to fulfil or decline it."
     )
     # Same rule as the fulfil prompt: in the order's thread this is a new message, because the one
@@ -459,7 +484,7 @@ async def prompt_decline(
     await query.answer()
 
 
-@router.callback_query(AdminOrderCB.filter(F.action == "decline_cancel"))
+@staff_router.callback_query(AdminOrderCB.filter(F.action == "decline_cancel"))
 async def cancel_decline_in_thread(query: CallbackQuery, state: FSMContext) -> None:
     """Back on the in-thread decline prompt: drop the state and say so where it was pressed."""
     await state.clear()
@@ -474,7 +499,7 @@ async def cancel_decline_in_thread(query: CallbackQuery, state: FSMContext) -> N
 # on the prompt any more. Back is the documented way out, because it returns to the order with both
 # Fulfil and Decline on it: an order left neither fulfilled nor declined is still somebody's unmet
 # purchase, and "Cancelled — the order is untouched" read like the job was finished.
-@router.message(Command("cancel"), OrderDeclineForm.reason)
+@staff_router.message(Command("cancel"), OrderDeclineForm.reason)
 async def cancel_decline(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -483,13 +508,10 @@ async def cancel_decline(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(OrderDeclineForm.reason)
+@staff_router.message(OrderDeclineForm.reason)
 async def receive_decline_reason(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
-    """The whole decline, in one step: refund parked, thread opened, buyer told, receipt.
-
-    The receipt is the last screen and it carries its own way out (🏠 Home). It used to push a full
-    Home screen as a second message, which buried the receipt — the one thing worth reading — under a
-    wall of menu copy the admin had not asked for.
+    """The reason for a decline. If money was taken, this asks where it goes before anything moves;
+    if nothing was charged, the decline goes straight through and the receipt comes back here.
     """
     data = await state.get_data()
     # Started in an order's topic? Then only that topic can answer it — see the fulfil handler for
@@ -509,17 +531,127 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
         await message.answer("That order is no longer in progress.")
         return
 
-    try:
-        declined = await order_service.decline_order(
-            session, order_id=order_id, reason=reason, admin_telegram_id=user.telegram_id
-        )
-    except UserError:
+    order = await OrderRepo(session).get_by_id(order_id)
+    if order is None or order.status not in (OrderStatus.PENDING, OrderStatus.PROCESSING):
         await state.clear()
         await message.answer("❌ This order can no longer be declined (already cancelled or delivered).")
         return
 
+    if order.payment_txn_id is not None and order.total_minor > 0:
+        # Money was taken, so it has to go somewhere — and where is the admin's call, made now that the
+        # reason is written. Nothing has moved yet: Back from here still leaves the order untouched.
+        await state.update_data(reason=reason)
+        await state.set_state(OrderDeclineForm.destination)
+        await message.answer(
+            _destination_prompt(order, reason),
+            reply_markup=_destination_keyboard(
+                order.id, in_group=message.chat.type in ("group", "supergroup")
+            ),
+        )
+        return
+
+    # Nothing was charged: there is no money to place, so the decline goes straight through.
     await state.clear()
+    text, markup = await _complete_decline(
+        message.bot, session, user, order_id=order_id, reason=reason, freeze=False
+    )
+    await message.answer(text, reply_markup=markup)
+
+
+def _destination_prompt(order, reason: str) -> str:
+    amount = format_minor(order.total_minor, order.currency)
+    return (
+        f"💰 <b>Where should {amount} go?</b>\n\n"
+        f"🛒 <code>{order.order_number}</code>\n"
+        f"📝 Reason: {escape_html(reason)}\n\n"
+        "↩️ <b>Refund Wallet</b> — the usual. Held for the buyer until you settle it: send it back to "
+        "them, or move it into their balance.\n"
+        "🧊 <b>Frozen Wallet</b> — on hold for review. The buyer sees it but can't spend it or get it "
+        "refunded until you unfreeze it (💸 Refund Wallets → the buyer → 🧊 Unfreeze).\n\n"
+        "Press <b>Back</b> to leave it alone — nothing has been declined yet."
+    )
+
+
+def _destination_keyboard(order_id: str, *, in_group: bool) -> InlineKeyboardMarkup:
+    # Same Back as the reason prompt: cancel in place inside an order's thread, return to the
+    # dossier in a private chat.
+    back = (
+        AdminOrderCB(action="decline_cancel", id=order_id)
+        if in_group
+        else AdminOrderCB(action="view", id=order_id)
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                btn("↩️ Refund Wallet", AdminOrderCB(action="decline_refund", id=order_id).pack(), SUCCESS),
+                btn("🧊 Freeze", AdminOrderCB(action="decline_freeze", id=order_id).pack(), PRIMARY),
+            ],
+            [btn("🔙 Back", back.pack(), DANGER)],
+        ]
+    )
+
+
+@staff_router.message(OrderDeclineForm.destination)
+async def destination_needs_a_button(message: Message, state: FSMContext) -> None:
+    """Text typed while the wallet question is open. Answered here rather than left to fall through,
+    because the admin guard would read an unhandled message in an admin state as an intruder."""
+    data = await state.get_data()
+    prompt_thread = data.get("thread_id")
+    if prompt_thread is not None and message.message_thread_id != prompt_thread:
+        raise SkipHandler
+    await message.answer("Tap a button above — ↩️ Refund Wallet or 🧊 Freeze — or 🔙 Back to leave it.")
+
+
+@staff_router.callback_query(AdminOrderCB.filter(F.action.in_(["decline_refund", "decline_freeze"])))
+async def choose_decline_destination(
+    query: CallbackQuery, callback_data: AdminOrderCB, state: FSMContext, session: AsyncSession, user
+) -> None:
+    """The second half of a decline: the admin picked where the money goes, so now it all happens."""
+    if not query.message:
+        return
+    data = await state.get_data()
+    if await state.get_state() != OrderDeclineForm.destination.state or data.get("order_id") != callback_data.id:
+        # A button from a decline that was abandoned, finished elsewhere, or replaced by a newer one.
+        await query.answer(
+            "This decline isn't waiting for an answer any more — start it again from the order.",
+            show_alert=True,
+        )
+        return
+
+    await state.clear()
+    text, markup = await _complete_decline(
+        query.bot,
+        session,
+        user,
+        order_id=callback_data.id,
+        reason=data.get("reason") or "",
+        freeze=callback_data.action == "decline_freeze",
+    )
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+
+
+async def _complete_decline(
+    bot, session: AsyncSession, user, *, order_id: str, reason: str, freeze: bool
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Decline, record it, tell the buyer, update the order's thread — and hand back the receipt.
+
+    Shared by the two ways a decline finishes: straight after the reason when nothing was charged,
+    and after the admin picks a wallet for the money.
+
+    The receipt is the last screen and it carries its own way out (🏠 Home). It used to push a full
+    Home screen as a second message, which buried the receipt — the one thing worth reading — under a
+    wall of menu copy the admin had not asked for.
+    """
+    try:
+        declined = await order_service.decline_order(
+            session, order_id=order_id, reason=reason, admin_telegram_id=user.telegram_id, freeze=freeze
+        )
+    except UserError:
+        return "❌ This order can no longer be declined (already cancelled or delivered).", None
+
     order = declined.order
+    frozen = order.refund_state is RefundState.FROZEN
 
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id,
@@ -529,6 +661,7 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
         metadata={
             "reason": reason[:256],
             "refunded_minor": declined.refunded_minor,
+            "destination": "frozen" if frozen else "refund",
             "decline_event": declined.decline_event.event_number,
             "refund_event": declined.refund_event.event_number if declined.refund_event else None,
             "funding_source": order.funding_source.value,
@@ -539,12 +672,11 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
     if buyer is not None:
         tx_hash = await _tx_hash(session, order.crypto_payment_id) if order.crypto_payment_id else None
         # An admin declining their OWN order is the same person on both ends, and they were getting
-        # the buyer's DM and the receipt back to back — two near-identical messages in one chat,
-        # differing only in "your Refund Balance" versus "their Refund Wallet". The receipt is
-        # strictly more informative, so the DM is skipped and the receipt says so.
+        # the buyer's DM and the receipt back to back — two near-identical messages in one chat. The
+        # receipt is strictly more informative, so the DM is skipped and the receipt says so.
         self_decline = buyer.telegram_id == user.telegram_id
         notified = not self_decline and await refund_service.notify_buyer(
-            message.bot,
+            bot,
             buyer,
             refund_service.buyer_notice(
                 order,
@@ -553,6 +685,7 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
                 refund_event=declined.refund_event,
                 decline_event=declined.decline_event,
                 tx_hash=tx_hash,
+                frozen=frozen,
             ),
         )
     else:
@@ -561,38 +694,39 @@ async def receive_decline_reason(message: Message, state: FSMContext, session: A
 
     # Reopen rather than sync: a delivered order's topic is closed, and a decline after delivery has
     # to land in the same thread instead of silently going nowhere.
-    await order_thread_service.reopen(message.bot, session, order)
+    await order_thread_service.reopen(bot, session, order)
 
-    await message.answer(
-        _receipt(order, declined, buyer, notified=notified, self_decline=self_decline),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [btn("📜 Open the order", AdminOrderCB(action="view", id=order.id).pack(), PRIMARY)],
-                [
-                    btn(
-                        "💸 Settle refund now",
-                        AdminRefundCB(action="view", id=str(order.user_id), order_id=order.id).pack(),
-                        SUCCESS,
-                    )
-                ],
-                # The way out lives on the receipt itself. Pushing a whole Home screen as a second
-                # message buried the receipt under menu copy nobody asked to re-read.
-                [
-                    btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
-                    btn("🏠 Home", NavCB(target="home").pack(), DANGER),
-                ],
+    rows = [[btn("📜 Open the order", AdminOrderCB(action="view", id=order.id).pack(), PRIMARY)]]
+    if declined.refunded_minor > 0:
+        rows.append(
+            [
+                btn(
+                    "🧊 View frozen money" if frozen else "💸 Settle refund now",
+                    AdminRefundCB(action="view", id=str(order.user_id), order_id=order.id).pack(),
+                    PRIMARY if frozen else SUCCESS,
+                )
             ]
-        ),
+        )
+    # The way out lives on the receipt itself.
+    rows.append(
+        [
+            btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
+            btn("🏠 Home", NavCB(target="home").pack(), DANGER),
+        ]
     )
+    receipt = _receipt(order, declined, buyer, notified=notified, self_decline=self_decline)
+    return receipt, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _receipt(order, declined, buyer, *, notified: bool, self_decline: bool = False) -> str:
     who = "the buyer"
     if buyer is not None:
         who = f"@{escape_html(buyer.username)}" if buyer.username else f"id {buyer.telegram_id}"
+    frozen = order.refund_state is RefundState.FROZEN
+    amount = format_minor(declined.refunded_minor, order.currency)
 
     lines = [
-        "🚫 <b>Declined and Refunded</b>",
+        "🚫 <b>Declined — money frozen</b>" if frozen else "🚫 <b>Declined and Refunded</b>",
         "",
         f"🛒 Order: <code>{order.order_number}</code>",
         f"👤 Buyer: {who}",
@@ -600,15 +734,24 @@ def _receipt(order, declined, buyer, *, notified: bool, self_decline: bool = Fal
         "",
     ]
 
-    if declined.refunded_minor > 0:
+    if declined.refunded_minor > 0 and frozen:
         lines.append(
-            f"💰 <b>{format_minor(declined.refunded_minor, order.currency)}</b> parked in their "
-            "<b>Refund Wallet</b> — held separately, they cannot spend it."
+            f"🧊 <b>{amount}</b> frozen in their <b>Frozen Wallet</b> — they can see it, but they "
+            "can't spend it or get it refunded."
+        )
+        lines.append(
+            "🔓 When you're ready: 💸 Refund Wallets → this buyer → 🧊 Unfreeze. The money moves to "
+            "their Refund Wallet and is settled from there as usual."
+        )
+    elif declined.refunded_minor > 0:
+        lines.append(
+            f"💰 <b>{amount}</b> parked in their <b>Refund Wallet</b> — held separately, they cannot "
+            "spend it."
         )
         if order.funding_source is FundingSource.CRYPTO:
             lines.append(
                 "💎 They paid on chain, so nothing has been sent back yet. They've been asked to open "
-                "💬 Live Chat with their BEP-20 address — send the USDT, then record the payout so the "
+                "🎧 Support with their BEP-20 address — send the USDT, then record the payout so the "
                 "balance matches reality."
             )
         else:
@@ -621,14 +764,15 @@ def _receipt(order, declined, buyer, *, notified: bool, self_decline: bool = Fal
 
     lines += ["", f"🔖 Decline ID: <code>{declined.decline_event.event_number}</code>"]
     if declined.refund_event is not None:
-        lines.append(f"🔖 Refund ID: <code>{declined.refund_event.event_number}</code>")
+        label = "Freeze ID" if frozen else "Refund ID"
+        lines.append(f"🔖 {label}: <code>{declined.refund_event.event_number}</code>")
 
     # No ticket is opened on their behalf any more. It used to be, and it was the one conversation
-    # they were allowed — so a decline could lock a buyer out of Live Chat over something unrelated,
+    # they were allowed — so a decline could lock a buyer out of support over something unrelated,
     # and a buyer who already had a chat open got the refund filed into it instead of into the order.
     lines += [
         "",
-        "💬 No chat was opened. They've been told to use 💬 Live Chat if they want to talk about it, "
+        "🎧 No chat was opened. They've been told to use 🎧 Support if they want to talk about it, "
         "quoting the IDs above.",
     ]
     if self_decline:
@@ -643,7 +787,7 @@ def _receipt(order, declined, buyer, *, notified: bool, self_decline: bool = Fal
 # ---- Fulfil ----
 
 
-@router.callback_query(AdminOrderCB.filter(F.action == "fulfill"))
+@staff_router.callback_query(AdminOrderCB.filter(F.action == "fulfill"))
 async def start_fulfill(query: CallbackQuery, callback_data: AdminOrderCB, state: FSMContext) -> None:
     await state.set_state(OrderFulfillForm.payload)
     await state.update_data(order_id=callback_data.id, thread_id=query.message.message_thread_id)
@@ -675,7 +819,7 @@ async def start_fulfill(query: CallbackQuery, callback_data: AdminOrderCB, state
     await query.answer()
 
 
-@router.callback_query(AdminOrderCB.filter(F.action == "fulfill_cancel"))
+@staff_router.callback_query(AdminOrderCB.filter(F.action == "fulfill_cancel"))
 async def cancel_fulfill_in_thread(query: CallbackQuery, state: FSMContext) -> None:
     """Back on the in-thread fulfil prompt: drop the state and say so where it was pressed."""
     await state.clear()
@@ -685,7 +829,7 @@ async def cancel_fulfill_in_thread(query: CallbackQuery, state: FSMContext) -> N
     await query.answer()
 
 
-@router.message(Command("cancel"), OrderFulfillForm.payload)
+@staff_router.message(Command("cancel"), OrderFulfillForm.payload)
 async def cancel_fulfill(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
@@ -693,7 +837,7 @@ async def cancel_fulfill(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(OrderFulfillForm.payload)
+@staff_router.message(OrderFulfillForm.payload)
 async def receive_fulfill_payload(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
     data = await state.get_data()
     # Started in an order's topic? Then only that topic can answer it. FSM state is keyed by chat

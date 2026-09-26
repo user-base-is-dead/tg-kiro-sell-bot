@@ -47,11 +47,11 @@ async def handle_crypto_webhook(
         # Notify user of successful payment
         try:
             message = (
-                "✅ <b>Payment Confirmed!</b>\n\n"
-                f"Amount received: {event_data.get('received_amount')} {event_data.get('currency')}\n"
-                f"Fee deducted: {event_data.get('fee_amount', 'N/A')}\n"
-                f"Transaction: <code>{event_data.get('tx_hash', 'pending')}</code>\n\n"
-                "Your wallet has been credited. Thank you!"
+                "✅ <b>Payment received</b>\n\n"
+                f"<blockquote>👛 Amount: {event_data.get('received_amount')} {event_data.get('currency')}\n"
+                f"➕ Fee: {event_data.get('fee_amount', 'N/A')}\n"
+                f"🔗 Transaction: <code>{event_data.get('tx_hash', 'pending')}</code></blockquote>\n\n"
+                "Your wallet has been topped up. Thanks for choosing PowerX Digital!"
             )
             await bot.send_message(user_id, message)
         except Exception as e:
@@ -67,11 +67,11 @@ async def handle_crypto_webhook(
         # Notify user of payment mismatch
         try:
             message = (
-                "⚠️ <b>Payment Amount Mismatch</b>\n\n"
-                f"Expected: {event_data.get('expected_amount')} {event_data.get('currency')}\n"
-                f"Received: {received} {event_data.get('currency')}\n\n"
-                "The amount received doesn't match. "
-                "Please contact support if you believe this is an error."
+                "⚠️ <b>Amount doesn't match</b>\n\n"
+                f"<blockquote>Expected: {event_data.get('expected_amount')} {event_data.get('currency')}\n"
+                f"Received: {received} {event_data.get('currency')}</blockquote>\n\n"
+                "The amount we received doesn't match the invoice. If you think this is an error, "
+                "open a ticket in 🎧 Support and we'll sort it out."
             )
             await bot.send_message(user_id, message)
         except Exception as e:

@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.filters.is_admin import is_admin_user
+from app.bot.filters.staff import sent_by_a_person
 from app.core.config import get_settings
 from app.database.models.support import TicketStatus
 from app.database.models.user import User
@@ -63,15 +63,19 @@ async def dm_relay(message: Message, session: AsyncSession, user: User | None = 
 
 
 async def group_relay(message: Message, session: AsyncSession, user: User | None = None) -> None:
-    """Any message inside a ticket's forum topic, from a staff member, gets mirrored to the ticket
-    owner's DM. Supports text, photos, and documents.
+    """Any message inside a ticket's forum topic gets mirrored to the ticket owner's DM. Supports
+    text, photos, and documents.
+
+    Whoever wrote it: every member of these groups is staff (see app/bot/filters/staff.py), so a new
+    team member can answer buyers the moment they are added — no ADMIN_IDS entry needed. Other bots
+    and posts made on behalf of a chat are the exception; nobody can be credited with those.
 
     Two groups qualify: SUPPORT_GROUP_ID, and ORDERS_GROUP_ID for a cancelled order whose thread has
     become a dispute the buyer is connected to. Topic numbers are per-chat, so which group the message
     came from is part of identifying the ticket — matching on the topic id alone would eventually
     relay a reply to the wrong buyer.
     """
-    if user is None:
+    if user is None or not sent_by_a_person(message):
         return
     settings = get_settings()
     in_support = settings.support_group_id is not None and message.chat.id == settings.support_group_id
@@ -87,8 +91,6 @@ async def group_relay(message: Message, session: AsyncSession, user: User | None
 
     # Commands are staff talking to the bot, not to the buyer.
     if text and text.startswith("/"):
-        return
-    if not await is_admin_user(session, user.telegram_id):
         return
 
     ticket = await SupportRepo(session).get_by_topic_in_group(

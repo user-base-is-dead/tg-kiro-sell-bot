@@ -77,8 +77,8 @@ def stock_detail_line(view: ProductView) -> str:
         # sold out, which is a different (and wrong) thing to tell someone.
         return ""
     if view.product.manual_stock is None and view.product.fulfillment_mode == FulfillmentMode.MANUAL:
-        return "📦 Stock: Made to order\n"
-    return f"📦 Stock: <b>{view.available_stock} remaining</b>\n"
+        return "📦 Stock: made to order\n"
+    return f"📦 Stock: <b>{view.available_stock} available</b>\n"
 
 
 def stock_label(view: ProductView) -> str:

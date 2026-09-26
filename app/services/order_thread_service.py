@@ -17,6 +17,7 @@ from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
+from app.services.staff_guide import order_guide
 from app.utils.money import format_minor
 from app.utils.text import escape_html
 from app.utils.time import as_utc
@@ -29,6 +30,10 @@ _EVENT_LINE = {
     OrderEventKind.DELIVERED: "📬 <b>Delivered</b>",
     OrderEventKind.DECLINED: "🚫 <b>Declined</b>",
     OrderEventKind.REFUND_PARKED: "💰 <b>Refund parked</b>",
+    OrderEventKind.REFUND_FROZEN: "🧊 <b>Money frozen</b>",
+    OrderEventKind.REFUND_UNFROZEN: "🔓 <b>Unfrozen → Refund Wallet</b>",
+    OrderEventKind.REFUND_SANCTIONED: "🚫 <b>Refund sanctioned</b>",
+    OrderEventKind.SANCTION_RELEASED: "✅ <b>Sanction released → Refund Wallet</b>",
     OrderEventKind.REFUND_PAID_OUT: "📤 <b>Refund sent</b>",
     OrderEventKind.REFUND_MOVED: "➡️ <b>Refund moved to wallet</b>",
     OrderEventKind.TICKET_OPENED: "🎫 <b>Refund ticket</b>",
@@ -149,6 +154,7 @@ async def _order_card(session: AsyncSession, order: Order) -> str:
         amount = format_minor(order.refund_amount_minor or 0, order.currency)
         label = {
             RefundState.PARKED: f"🟠 <b>{amount}</b> parked in their Refund Wallet — not settled yet",
+            RefundState.FROZEN: f"🧊 <b>{amount}</b> frozen in their Frozen Wallet — not released yet",
             RefundState.SETTLED: f"🟢 <b>{amount}</b> refunded and settled",
         }[order.refund_state]
         lines += ["", "💸 <b>Refund</b>", label]
@@ -209,6 +215,12 @@ async def sync(bot: Bot, session: AsyncSession, order: Order) -> None:
             topic = await bot.create_forum_topic(chat_id=group_id, name=topic_name(order, who))
             order.thread_id = topic.message_thread_id
             await session.flush()
+            # The topic opens with the staff guide, so the commands are the first thing anyone new
+            # sees. Its own try: a guide that fails to post must not cost the order its card.
+            try:
+                await bot.send_message(group_id, order_guide(), message_thread_id=order.thread_id)
+            except TelegramAPIError as exc:
+                logger.warning("Couldn't post the staff guide for %s (%s)", order.order_number, exc)
             card = await bot.send_message(
                 group_id, await _order_card(session, order), message_thread_id=order.thread_id
             )
@@ -229,12 +241,14 @@ async def sync(bot: Bot, session: AsyncSession, order: Order) -> None:
             await session.flush()
 
         # A dead order's thread is closed so the group reads as a queue of live work. Two
-        # exceptions, both of them unfinished business: money still parked in the Refund Wallet, and
-        # a dispute the buyer is connected to — that thread is the conversation now, and closing it
-        # would mute both sides mid-sentence. Only an admin's /close ends it.
+        # exceptions, both of them unfinished business: money still held for the buyer — parked in
+        # the Refund Wallet or frozen for review — and a dispute the buyer is connected to — that
+        # thread is the conversation now, and closing it would mute both sides mid-sentence. Only an
+        # admin's /close ends it.
         if await dispute_is_open(session, order):
             return
-        if order.status in (OrderStatus.CANCELLED, OrderStatus.FAILED) and order.refund_state is not RefundState.PARKED:
+        money_held = order.refund_state in (RefundState.PARKED, RefundState.FROZEN)
+        if order.status in (OrderStatus.CANCELLED, OrderStatus.FAILED) and not money_held:
             await _close(bot, group_id, order)
         elif order.status is OrderStatus.COMPLETED:
             # Delivered is done: the topic closes itself, which is the whole reason the group stays

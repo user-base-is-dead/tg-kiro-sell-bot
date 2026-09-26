@@ -10,14 +10,14 @@ from app.database.models.order import Warranty, WarrantyStatus
 from app.database.models.user import User
 from app.database.repositories.warranty_repo import WarrantyRepo
 from app.locales.i18n import t
-from app.services.support_service import active_thread, create_ticket
+from app.services.support_service import WARRANTY_CLAIM_CATEGORY, active_thread, create_ticket
 from app.services.warranty_service import CLAIM_GRACE, format_duration, is_expired, now_utc, open_claim
 from app.utils.money import format_minor
 from app.utils.time import as_utc
 
 router = Router(name="warranty.claim")
 
-NO_WARRANTY_MSG = "This product does not come with a warranty."
+NO_WARRANTY_MSG = "This item doesn't come with a warranty."
 
 
 def _claim_subject(warranty: Warranty) -> str:
@@ -56,7 +56,7 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
     warranty = await repo.get_by_id(warranty_id)
 
     if warranty is None or warranty.user_id != user.id:
-        await query.answer("Warranty not found.", show_alert=True)
+        await query.answer("We couldn't find that warranty.", show_alert=True)
         return
 
     item = warranty.order_item
@@ -65,11 +65,11 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
         return
 
     if warranty.status is WarrantyStatus.CLAIMED:
-        await query.answer("A claim for this item is already under review.", show_alert=True)
+        await query.answer("A claim for this item is already being reviewed.", show_alert=True)
         return
 
     if warranty.status is not WarrantyStatus.ACTIVE:
-        await query.answer("This warranty is no longer active.", show_alert=True)
+        await query.answer("This warranty isn't active anymore.", show_alert=True)
         return
 
     now = now_utc()
@@ -78,7 +78,7 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
     if is_expired(warranty, now):
         warranty.status = WarrantyStatus.EXPIRED
         await session.flush()
-        await query.answer("This warranty has expired.", show_alert=True)
+        await query.answer("This warranty has ended.", show_alert=True)
         return
 
     # Same one-conversation rule the ticket screen enforces, checked from this side too — a claim
@@ -98,16 +98,17 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
         query.bot,
         session,
         user=user,
-        category="Warranty Claim",
+        category=WARRANTY_CLAIM_CATEGORY,
         subject=_claim_subject(warranty),
         support_group_id=get_settings().support_group_id,
     )
 
     if not reached_staff:
-        # Nobody was told, so nothing is under review. Filing the claim anyway would put the
-        # warranty into CLAIMED — freezing its countdown display and blocking every other request
-        # this user could make — on the strength of a message that reached no one. The warranty is
-        # left exactly as it was and they are asked to come back.
+        # The claim's thread cannot work — the support group is unreachable, so nothing typed into
+        # it would reach staff (at most an admin got a one-off alert DM). Filing the claim anyway
+        # would put the warranty into CLAIMED — freezing its countdown display and blocking every
+        # other request this user could make — for a conversation that cannot happen. The warranty
+        # is left exactly as it was and they are asked to come back.
         await query.answer(t("support.system_unavailable", user.locale), show_alert=True)
         return
 
@@ -116,22 +117,21 @@ async def claim_warranty(query: CallbackQuery, session: AsyncSession, user: User
 
     grace_hours = int(CLAIM_GRACE.total_seconds() // 3600)
     delivery_note = (
-        "⏱️ Our team will respond within "
-        f"{grace_hours} hours. If nobody responds in time the claim is closed automatically and "
-        "your warranty simply carries on from where it stands."
+        f"⏱️ Our team will get back to you within {grace_hours} hours. If nobody responds in time, "
+        "the claim closes on its own and your warranty simply carries on from where it stands."
     )
 
     text = (
-        "✅ <b>Warranty Claim Submitted</b>\n\n"
-        f"🎫 Ticket: <code>{ticket.ticket_number}</code>\n"
+        "✅ <b>Claim submitted</b>\n\n"
+        f"<blockquote>🎫 Ticket: <code>{ticket.ticket_number}</code>\n"
         f"📦 Product: {warranty.order_item.product_name}\n"
-        f"⏱️ Warranty time held for you: <b>{remaining}</b>\n"
+        f"⏱️ Cover held for you: <b>{remaining}</b>\n"
         f"⏳ Original expiry: {as_utc(warranty.expires_at):%d %b %Y %H:%M} UTC\n"
-        "📋 Status: Under review\n\n"
+        "📋 Status: Under review</blockquote>\n\n"
         f"{delivery_note}\n\n"
         "ℹ️ If we replace the item, the time above is added to the replacement from the moment it's "
-        "handed over. Note that the original warranty period keeps running while we review, so "
-        "please don't wait if it's close to expiring."
+        "handed over. The original warranty keeps running while we review, so please don't wait if "
+        "it's close to ending."
     )
 
     await query.message.edit_text(text, reply_markup=back_keyboard(user.locale))

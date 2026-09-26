@@ -6,7 +6,6 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.bot.callbacks import (
     AdminCategoryCB,
-    AdminGiftCB,
     AdminMiscCB,
     AdminOrderCB,
     AdminProductCB,
@@ -34,11 +33,10 @@ _PANEL_TEXT = (
     "📦 <b>Products</b> — manage inventory and product listings\n"
     "📁 <b>Categories</b> — organize and edit product categories\n"
     "👥 <b>Users</b> — view and manage user accounts\n"
+    "💳 <b>Wallet Balances</b> — every account holding spendable credit, largest first (zero balances aren't listed)\n"
     "🛒 <b>Orders</b> — the fulfilment queue, plus search any order by ID and read its full history\n"
-    "💸 <b>Refund Wallets</b> — money parked from declined orders, waiting for you to settle it\n"
-    "🎁 <b>Gift Codes</b> — create and manage gift code campaigns\n"
+    "💸 <b>Refund Wallets</b> — money from declined orders: refunds to settle, and frozen money to release\n"
     "📢 <b>Broadcast</b> — send messages to all users\n"
-    "⚙️ <b>Settings</b> — configure bot settings and preferences\n"
     "📝 <b>Logs</b> — view system logs and audit events"
 )
 
@@ -58,16 +56,16 @@ def _panel_keyboard(locale: str) -> InlineKeyboardMarkup:
                 btn("👥 Users", AdminMiscCB(action="users").pack(), PRIMARY),
                 btn("🛒 Orders", AdminOrderCB(action="list").pack(), PRIMARY),
             ],
-            # Its own full-width row rather than sharing one with Gift Codes: this is the only screen
-            # that shows money the store owes people, so it should not read as a sibling of a promo
-            # tool.
+            # Its own full-width row: this is the only screen that shows money the store owes
+            # people, so it should not read as a sibling of anything else.
             [btn("💸 Refund Wallets", AdminMiscCB(action="refunds").pack(), SUCCESS)],
-            [btn("🎁 Gift Codes", AdminGiftCB(action="list").pack(), PRIMARY)],
+            # Next to Refund Wallets because the two answer the same question from opposite ends:
+            # money the store owes, and money buyers can still spend here.
+            [btn("💳 Wallet Balances", AdminMiscCB(action="balances").pack(), SUCCESS)],
             [
                 btn("📢 Broadcast", AdminMiscCB(action="broadcast").pack(), PRIMARY),
-                btn("⚙️ Settings", AdminMiscCB(action="settings").pack(), PRIMARY),
+                btn("📝 Logs", AdminMiscCB(action="logs").pack(), PRIMARY),
             ],
-            [btn("📝 Logs", AdminMiscCB(action="logs").pack(), PRIMARY)],
         ],
         locale,
         back_target="home",

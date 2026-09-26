@@ -10,77 +10,76 @@ from app.bot.filters.menu_button import MenuButton
 from app.bot.keyboards.common import with_nav
 from app.bot.keyboards.styles import PRIMARY, SUCCESS, btn
 from app.core.config import get_settings
-from app.database.models.order import OrderStatus
 from app.database.models.user import User
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import t
 from app.utils.money import format_minor
 
-router = Router(name="user.profile")
+router = Router(name="user.wallet")
 
 
-# One copy, used by both /profile and the 👤 Profile button in the nav router. It existed as two
-# verbatim paste-ups, which is how the Refund Balance line ended up on one screen and not the other.
-async def render_profile(session: AsyncSession, user: User) -> str:
-    wallet = await WalletRepo(session).get_or_create(user.id, currency=get_settings().default_currency)
-    order_repo = OrderRepo(session)
-    total_orders = await order_repo.count_for_user(user.id)
+async def render_wallet_screen(session: AsyncSession, user: User) -> tuple[str, InlineKeyboardMarkup]:
+    """👛 Wallet: the one place a buyer sees all of their money.
 
-    recent = await order_repo.list_for_user(user.id, offset=0, limit=100)
-    total_spent = sum(o.total_minor for o in recent if o.status == OrderStatus.COMPLETED)
+    Three balances, always all three, because they must never read as one number: the Balance is the
+    only one that can buy anything; the Refund Wallet is money from a declined order that staff will
+    settle with them; the Frozen Wallet is declined-order money staff are holding for review. Showing
+    a $0.00 Frozen Wallet to everybody is deliberate — it is how a buyer learns the wallet exists
+    before the day something lands in it.
 
-    username = f"@{user.username}" if user.username else "—"
-    text = (
-        "━━━━━━━━━━━━━━━━━━\n"
-        "👤 <b>MY PROFILE</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"Username: {username}\n"
-        f"ID: <code>{user.telegram_id}</code>\n\n"
-        f"📦 Orders: {total_orders}\n"
-        f"💰 Total Spent: {format_minor(total_spent, wallet.currency)}\n"
-        f"💳 Balance: {format_minor(wallet.balance_minor, wallet.currency)}"
-    )
-    # Only when there is something in it. Money owed back on a declined order is stated as held rather
-    # than as part of the balance, because the two must never read as one number — this one cannot buy
-    # anything until an admin settles it.
-    if wallet.refund_balance_minor:
-        text += (
-            f"\n💸 Refund Balance: {format_minor(wallet.refund_balance_minor, wallet.currency)}"
-            "\n     <i>held for you while we settle it — not spendable</i>"
-        )
-    return text
+    A fourth, Sanctioned, appears only while it holds something: Refund Wallet money staff have
+    blocked. It is a penalty hold, and a standing "Sanctioned: $0.00" on every buyer's wallet would
+    read as a threat rather than as information.
 
-
-async def render_profile_screen(
-    session: AsyncSession, user: User
-) -> tuple[str, InlineKeyboardMarkup]:
-    """The profile plus its keyboard, so the 💸 My Refunds door is on both entry points.
-
-    The button is only drawn for someone who has a refund to look at — either money still held or a
-    past one that was settled. A permanent button that opens "you have no refunds" for almost
-    everybody teaches people to ignore the row it sits in.
+    It replaced 👤 My Account and ➕ Add Funds. Topping up ahead of time is gone; buyers pay at
+    checkout, in USDT or from this balance.
     """
     wallet = await WalletRepo(session).get_or_create(user.id, currency=get_settings().default_currency)
-    has_history = bool(await OrderRepo(session).list_refunded_for_user(user.id, limit=1))
+    currency = wallet.currency
+    locale = user.locale
 
-    rows = []
-    # Always drawn, unlike 💸 My Refunds below. The balance on this screen is a bare number, and the
-    # door to what is behind it has to be there before the user has a reason to look for it — money
-    # an admin credits by hand arrives with no announcement, so this button is the only way they can
-    # ever find out where it came from.
-    rows.append([btn(t("menu.wallet", user.locale), NavCB(target="wallet").pack(), PRIMARY)])
-    if wallet.refund_balance_minor or has_history:
-        label = t("menu.refunds", user.locale)
-        if wallet.refund_balance_minor:
-            label += f" ({format_minor(wallet.refund_balance_minor, wallet.currency)})"
+    sanctioned = ""
+    notes = t("wallet_home.notes", locale)
+    if wallet.sanctioned_balance_minor:
+        sanctioned = "\n" + t(
+            "wallet_home.sanctioned", locale, amount=format_minor(wallet.sanctioned_balance_minor, currency)
+        )
+        notes += "\n" + t("wallet_home.sanctioned_note", locale)
+
+    text = "\n\n".join(
+        [
+            t("wallet_home.title", locale),
+            t(
+                "wallet_home.balances",
+                locale,
+                balance=format_minor(wallet.balance_minor, currency),
+                refund=format_minor(wallet.refund_balance_minor, currency),
+                frozen=format_minor(wallet.frozen_balance_minor, currency),
+                sanctioned=sanctioned,
+            ),
+            notes,
+        ]
+    )
+
+    # 📊 Transactions is always drawn: money an admin credits by hand arrives with no announcement,
+    # so this is the only way a buyer can ever find out where a balance came from. ↩️ Refunds only
+    # when there is something behind it — a door that opens onto "no refunds" for almost everybody
+    # teaches people to ignore the row it sits in.
+    rows = [[btn(t("menu.transactions", locale), NavCB(target="wallet").pack(), PRIMARY)]]
+    held = wallet.refund_balance_minor + wallet.frozen_balance_minor + wallet.sanctioned_balance_minor
+    has_history = bool(await OrderRepo(session).list_refunded_for_user(user.id, limit=1))
+    if held or has_history:
+        label = t("menu.refunds", locale)
+        if held:
+            label += f" ({format_minor(held, currency)})"
         rows.append([btn(label, NavCB(target="refunds").pack(), SUCCESS)])
 
-    return await render_profile(session, user), with_nav(rows, user.locale, back_target="home", home=False)
+    return text, with_nav(rows, locale, back_target="home", home=False)
 
 
-@router.message(Command("profile"))
-@router.message(MenuButton("menu.profile"))
-async def cmd_profile(message: Message, session: AsyncSession, user: User) -> None:
-    text, markup = await render_profile_screen(session, user)
+@router.message(Command("wallet"))
+@router.message(MenuButton("menu.wallet"))
+async def cmd_wallet(message: Message, session: AsyncSession, user: User) -> None:
+    text, markup = await render_wallet_screen(session, user)
     await message.answer(text, reply_markup=markup)
