@@ -26,6 +26,11 @@ class StockUploadForm(StatesGroup):
     payloads = State()
 
 
+class StockEditForm(StatesGroup):
+    # The new content for one stock item; which item lives in FSM data (edit_stock_id).
+    payload = State()
+
+
 class ProductImportForm(StatesGroup):
     document = State()
 

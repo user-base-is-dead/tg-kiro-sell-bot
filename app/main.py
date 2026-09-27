@@ -21,6 +21,7 @@ from app.bot.handlers.admin.panel import router as admin_panel_router
 from app.bot.handlers.admin.payments import router as admin_payments_router
 from app.bot.handlers.admin.products import router as admin_products_router
 from app.bot.handlers.admin.refund_wallets import router as admin_refund_wallets_router
+from app.bot.handlers.admin.stock_items import router as admin_stock_items_router
 from app.bot.handlers.admin.support import router as admin_support_router
 from app.bot.handlers.admin.support import staff_router as admin_support_staff_router
 from app.bot.handlers.admin.users import router as admin_users_router
@@ -68,6 +69,7 @@ def _include_routers(dp: Dispatcher) -> None:
     dp.include_router(admin_panel_router)
     dp.include_router(admin_categories_router)
     dp.include_router(admin_products_router)
+    dp.include_router(admin_stock_items_router)
     dp.include_router(admin_orders_router)
     # Admin-or-group-member routers (see app/bot/filters/staff.py): the parts of the admin surface
     # that staff use inside the support and orders groups. Before the guard like every admin router,

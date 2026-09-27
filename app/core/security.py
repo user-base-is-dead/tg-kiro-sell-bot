@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import html
+import re
 import secrets
 from functools import lru_cache
 
@@ -25,6 +29,39 @@ def get_cipher() -> PayloadCipher:
     from app.core.config import get_settings
 
     return PayloadCipher(get_settings().encryption_key)
+
+
+_TAG_RE = re.compile(r"<[^>]*>")
+_SPACE_RE = re.compile(r"\s+")
+
+
+def normalize_stock_text(payload: str) -> str:
+    """What makes two stock items "the same login": the text, not how it was formatted.
+
+    Payloads are stored as Telegram HTML, so one login sent once as plain text and once as a
+    copy-box would otherwise look like two different items. Tags are dropped, entities decoded and
+    every run of whitespace collapsed; case is kept, because passwords are case-sensitive.
+    """
+    return _SPACE_RE.sub(" ", html.unescape(_TAG_RE.sub("", payload))).strip()
+
+
+@lru_cache
+def _fingerprint_key() -> bytes:
+    from app.core.config import get_settings
+
+    return hashlib.sha256(b"stock-fingerprint\x00" + get_settings().encryption_key.encode()).digest()
+
+
+def stock_fingerprint(payload: str) -> str:
+    """A keyed hash of a stock item's normalised text — how the same login is recognised twice.
+
+    Fernet ciphertext is different every time the same text is encrypted, so it cannot be compared;
+    this can. Keyed (HMAC with a key derived from ENCRYPTION_KEY) rather than a plain SHA-256,
+    because a short password's plain hash can be brute-forced from a database dump.
+    """
+    return hmac.new(
+        _fingerprint_key(), normalize_stock_text(payload).encode(), hashlib.sha256
+    ).hexdigest()
 
 
 def new_idempotency_key() -> str:

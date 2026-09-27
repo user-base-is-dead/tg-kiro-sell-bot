@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from aiogram import F, Router
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.callbacks import AdminProductCB
+from app.bot.callbacks import AdminProductCB, AdminStockCB
 from app.bot.filters.is_admin import IsAdmin
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
@@ -28,6 +29,7 @@ from app.bot.states.product_form import (
     StockUploadForm,
 )
 from app.core.config import get_settings
+from app.core.security import get_cipher
 from app.database.models.catalog import (
     Category,
     FulfillmentMode,
@@ -44,11 +46,14 @@ from app.services.announcement_service import (
     announce_sold_out,
 )
 from app.services.catalog_service import (
+    MAX_PAYLOAD_BYTES,
+    StockAddResult,
     add_stock,
     compute_display_status,
     create_product,
     resync_status as _resync_status,
 )
+from app.services import stock_service
 from app.services.product_import import MAX_BYTES, MAX_ROWS, apply_rows, parse_csv, to_csv
 from app.utils.money import format_minor, parse_to_minor
 from app.utils.pagination import Page
@@ -280,7 +285,12 @@ def _detail_keyboard(product, credentials: int = 0) -> InlineKeyboardMarkup:
                     PRIMARY,
                 ),
             ],
-            [btn("📦 Add Stock", AdminProductCB(action="stock", id=pid).pack(), SUCCESS)],
+            [
+                btn("📦 Add Stock", AdminProductCB(action="stock", id=pid).pack(), SUCCESS),
+                # Every login of this product, one at a time: see, edit or remove any unsold one,
+                # and see which buyer each sold one went to.
+                btn("📋 Stock items", AdminStockCB(action="list", pid=pid).pack(), PRIMARY),
+            ],
             [
                 btn(
                     toggle_label,
@@ -749,9 +759,10 @@ async def _show_step(
 
     if step == "stock":
         await send(
-            f"{head}Send the stock item — a licence key, or account credentials on as many lines "
-            "as you need. <b>One message = one item.</b> "
-            "They are encrypted before they touch the database.\n\n"
+            f"{head}Send the stock — a licence key, account credentials, or many logins pasted at "
+            "once. If the message has several lines you'll be asked how to split it. Each item is "
+            "sold to one buyer only, and a login already in stock or already sold is skipped. "
+            "Everything is encrypted before it touches the database.\n\n"
             "Skip to create the product OUT OF STOCK and add them later.",
             reply_markup=_step_keyboard("stock", extra=[[btn("⏭️ Skip", "pskip:stock", PRIMARY)]]),
         )
@@ -895,13 +906,16 @@ async def _finish_product(
     await session.flush()
 
     added = 0
+    skipped = ""
     if stock_lines:
-        added = await add_stock(
+        result = await add_stock(
             session,
             product_id=product_id,
             plaintext_payloads=stock_lines,
             added_by_admin_id=admin_id,
         )
+        added = result.added
+        skipped = _skipped_note(result)
     await session.flush()
     await state.clear()
 
@@ -913,6 +927,7 @@ async def _finish_product(
         tail = "✅ <b>LIVE</b> — you fulfil each order by hand, so it needs no stock."
     else:
         tail = "⚠️ Shows <b>OUT OF STOCK</b> until you add stock from its product page."
+    tail += skipped
 
     text, markup = await _render_list(session, 1)
     body = f"✅ Product <b>{data['name']}</b> created (id {product_id}).\n{tail}\n\n{text}"
@@ -1010,8 +1025,31 @@ async def receive_wizard_stock(
     if not payload:
         await message.answer("Send the stock item as a message — or press Skip.")
         return
+    if _needs_split_question(message):
+        await _ask_how_to_split(message, state, payload=payload, action="wsplit", product_id="")
+        return
     await state.update_data(stock_lines=[payload])
     await _show_step(message, state, "stock_count", session, edit=False)
+
+
+@router.callback_query(AdminStockCB.filter(F.action == "wsplit"))
+async def answer_wizard_split(
+    query: CallbackQuery, callback_data: AdminStockCB, state: FSMContext, session: AsyncSession
+) -> None:
+    """The wizard's half of "how should this pasted message be added?"."""
+    if await state.get_state() != ProductForm.stock.state:
+        await query.answer("This question has expired — that product was already saved or left.", show_alert=True)
+        return
+    pieces = await _take_pending_split(query, state, callback_data)
+    if pieces is None:
+        return
+    if not pieces:
+        await query.message.edit_text("✖️ Discarded. Send the stock again — or press ⏭️ Skip above.")
+        await query.answer()
+        return
+    await state.update_data(stock_lines=pieces)
+    await _show_step(query.message, state, "stock_count", session, edit=True)
+    await query.answer(f"{len(pieces)} item(s) ready — they are added when the product is saved.")
 
 
 @router.message(ProductForm.stock_count)
@@ -1056,13 +1094,23 @@ async def _add_stock_screen(
         f"📦 <b>Add Stock</b> — {name}\n\n"
         f"{note}"
         f"In stock now: <b>{in_stock}</b>\n\n"
-        "Send the stock item — a licence key, or account credentials on as many lines as you "
-        "need. <b>One message = one item</b>, so multi-line logins stay together. They are "
-        "encrypted before they touch the database.\n\n"
+        "Send the stock — a licence key, account credentials, or many logins pasted at once. If a "
+        "message has several lines you'll be asked how to split it: one login per line, one per "
+        "block, or the whole message as one item. They are encrypted before they touch the "
+        "database.\n\n"
+        "Each item is sold to <b>one buyer only</b>. A login that is already in stock, or was "
+        "already sold, is skipped. To see, edit or remove what's loaded, use 📋 Stock items.\n\n"
         "Keep sending messages to add more, or press 🔙 Back when you're done.",
         InlineKeyboardMarkup(
             inline_keyboard=[
-                [btn("🔙 Back", AdminProductCB(action="view", id=str(product_id)).pack(), DANGER)]
+                [
+                    btn(
+                        "📋 Stock items",
+                        AdminStockCB(action="list", pid=str(product_id)).pack(),
+                        PRIMARY,
+                    )
+                ],
+                [btn("🔙 Back", AdminProductCB(action="view", id=str(product_id)).pack(), DANGER)],
             ]
         ),
     )
@@ -1087,18 +1135,144 @@ async def cancel_stock(message: Message, state: FSMContext) -> None:
 
 @router.message(StockUploadForm.payloads)
 async def receive_stock(message: Message, state: FSMContext, session: AsyncSession, user) -> None:
-    # One message = one stock item. Credentials are routinely multi-line (login, password, 2FA
-    # code, notes), so splitting on newlines would shred a single account into several unusable
-    # "items". The whole message body is kept verbatim, minus surrounding blank space — including
-    # its formatting, so a credential the admin sent as a copy-box arrives as one.
+    # A message with one line is one item. One with several is either a single multi-line login
+    # (email, password, 2FA code) or a list of logins pasted in one go — and guessing wrong either
+    # sells twenty logins to one buyer or shreds one account into useless pieces. So it is asked.
     payload = as_admin_wrote_it(message)
     if not payload:
         await message.answer("Send the stock item as a message, or /cancel:")
         return
-    lines = [payload]
 
     data = await state.get_data()
     product_id = data["product_id"]
+    if _needs_split_question(message):
+        await _ask_how_to_split(
+            message, state, payload=payload, action="split", product_id=str(product_id)
+        )
+        return
+
+    await _add_and_show(message, session, product_id=product_id, payloads=[payload], admin_id=user.telegram_id)
+
+
+@router.callback_query(AdminStockCB.filter(F.action == "split"))
+async def answer_split(
+    query: CallbackQuery, callback_data: AdminStockCB, state: FSMContext, session: AsyncSession, user
+) -> None:
+    """Add Stock's half of "how should this pasted message be added?"."""
+    data = await state.get_data()
+    if await state.get_state() != StockUploadForm.payloads.state or str(data.get("product_id")) != callback_data.pid:
+        await query.answer(
+            "This question has expired — open 📦 Add Stock and send it again.", show_alert=True
+        )
+        return
+    pieces = await _take_pending_split(query, state, callback_data)
+    if pieces is None:
+        return
+    if not pieces:
+        await query.message.edit_text("✖️ Discarded — nothing was added. Send the stock again whenever you're ready.")
+        await query.answer()
+        return
+    await query.answer()
+    await _add_and_show(
+        query.message,
+        session,
+        product_id=int(callback_data.pid),
+        payloads=pieces,
+        admin_id=user.telegram_id,
+        edit=True,
+    )
+
+
+def _needs_split_question(message: Message) -> bool:
+    lines, _blocks = stock_service.split_counts(message.text or message.caption or "")
+    return lines > 1
+
+
+async def _ask_how_to_split(
+    message: Message, state: FSMContext, *, payload: str, action: str, product_id: str
+) -> None:
+    """Park the pasted message and ask how to cut it up.
+
+    Parked encrypted, like every other copy of a credential: FSM data lives in Redis, and the answer
+    may be a few minutes away. Keyed to this message's id, so a button from an older question can
+    never apply its answer to a newer paste.
+    """
+    text = message.text or message.caption or ""
+    lines, blocks = stock_service.split_counts(text)
+    await state.update_data(
+        pending_stock=get_cipher().encrypt(json.dumps({"html": payload, "text": text})),
+        pending_stock_msg=message.message_id,
+    )
+
+    def answer(mode: str) -> str:
+        return AdminStockCB(action=action, pid=product_id, id=str(message.message_id), view=mode).pack()
+
+    body = [
+        f"📋 <b>This message has {lines} lines.</b> How should it be added?",
+        "",
+        f"📄 <b>One per line</b> — {lines} items. For lists like <code>email:password</code>.",
+    ]
+    rows = [[btn(f"📄 One per line ({lines})", answer(stock_service.SPLIT_LINES), PRIMARY)]]
+    if 1 < blocks < lines:
+        body.append(
+            f"📑 <b>Split at blank lines</b> — {blocks} items. For logins that take several lines "
+            "each, with an empty line between them."
+        )
+        rows.append([btn(f"📑 Split at blank lines ({blocks})", answer(stock_service.SPLIT_BLOCKS), PRIMARY)])
+    body += [
+        "📦 <b>Keep together</b> — 1 item, exactly as you sent it. For one login that spans lines.",
+        "",
+        "Each item is sold to one buyer only; logins already in stock or already sold are skipped.",
+    ]
+    rows.append([btn("📦 Keep as 1 item", answer(stock_service.KEEP_WHOLE), SUCCESS)])
+    rows.append([btn("✖️ Discard", answer("x"), DANGER)])
+    await message.answer("\n".join(body), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def _take_pending_split(
+    query: CallbackQuery, state: FSMContext, callback_data: AdminStockCB
+) -> list[str] | None:
+    """The pieces the parked message becomes under the admin's answer — [] for Discard, None (after
+    telling them) when the question is not the one currently parked."""
+    data = await state.get_data()
+    if not data.get("pending_stock") or str(data.get("pending_stock_msg")) != callback_data.id:
+        await query.answer(
+            "This question has expired — a newer message replaced it. Send the stock again.",
+            show_alert=True,
+        )
+        return None
+    parked = json.loads(get_cipher().decrypt(data["pending_stock"]))
+    await state.update_data(pending_stock=None, pending_stock_msg=None)
+    if callback_data.view == "x":
+        return []
+    return stock_service.split_payload(text=parked["text"], html=parked["html"], mode=callback_data.view)
+
+
+def _skipped_note(result: StockAddResult) -> str:
+    """Why fewer items went in than were sent, or '' when everything did."""
+    notes = []
+    if result.duplicates:
+        notes.append(
+            f"⚠️ Skipped <b>{result.duplicates}</b> duplicate(s) — already in stock, already sold, "
+            "or repeated in what you sent. One login is only ever sold once."
+        )
+    if result.too_long:
+        notes.append(
+            f"⚠️ Skipped <b>{result.too_long}</b> item(s) longer than {MAX_PAYLOAD_BYTES} bytes."
+        )
+    return "".join(f"\n{note}" for note in notes)
+
+
+async def _add_and_show(
+    message: Message,
+    session: AsyncSession,
+    *,
+    product_id: int,
+    payloads: list[str],
+    admin_id: int,
+    edit: bool = False,
+) -> None:
+    """Add one batch, then bring the Add Stock prompt straight back with what happened."""
     # Read the latch *before* add_stock clears it: that column is the only record that this product
     # had sold out, and it is what tells a restock apart from topping up a shelf that never emptied.
     before = await ProductRepo(session).get_by_id(product_id)
@@ -1110,30 +1284,23 @@ async def receive_stock(message: Message, state: FSMContext, session: AsyncSessi
     was_sold_out = (
         before is not None and before.status is ProductStatus.OUT_OF_STOCK and bool(ever_stocked)
     )
-    try:
-        count = await add_stock(
-            session,
-            product_id=product_id,
-            plaintext_payloads=lines,
-            added_by_admin_id=user.telegram_id,
-        )
-    except ValueError as exc:
-        # Stay in the form: a rejected batch is something to retype, not a reason to walk the admin
-        # back to the product page and make them start the whole flow again.
-        await message.answer(f"❌ {exc}\n\nSend the items again, or press 🔙 Back to stop.")
-        return
+    name = before.name if before is not None else ""
 
-    await session.flush()
-    # The state deliberately survives, so the very next message adds another batch.
-    text, markup = await _add_stock_screen(
-        session, product_id, note=f"✅ Added <b>{count}</b> item(s).\n"
+    result = await add_stock(
+        session, product_id=product_id, plaintext_payloads=payloads, added_by_admin_id=admin_id
     )
-    await message.answer(text, reply_markup=markup)
+    await session.flush()
+
+    # The state deliberately survives, so the very next message adds another batch.
+    note = f"✅ Added <b>{result.added}</b> item(s).{_skipped_note(result)}\n"
+    text, markup = await _add_stock_screen(session, product_id, note=note)
+    await (message.edit_text if edit else message.answer)(text, reply_markup=markup)
 
     # Only on the batch that actually ends the drought — the loop stays open afterwards, so asking
-    # again on every further batch would nag the admin for one restock.
-    if was_sold_out and before is not None:
-        prompt, prompt_markup = _announce_prompt("restock", product_id, before.name)
+    # again on every further batch would nag the admin for one restock. A batch of nothing but
+    # duplicates ended nothing.
+    if was_sold_out and result.added:
+        prompt, prompt_markup = _announce_prompt("restock", product_id, name)
         await message.answer(prompt, reply_markup=prompt_markup)
 
 

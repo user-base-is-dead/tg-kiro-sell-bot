@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_cipher
+from app.core.security import get_cipher, normalize_stock_text, stock_fingerprint
 from app.database.models.catalog import FulfillmentMode, Product, ProductStatus
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
@@ -151,22 +151,66 @@ async def create_product(
     return product.id
 
 
+# The longest plaintext one stock item may hold. The ciphertext column is VARCHAR(4096), and Fernet
+# grows its input by about a third plus a fixed header — past ~3000 bytes PostgreSQL rejects the row
+# and takes the whole batch down with it. Refused up front instead, with the reason on screen.
+MAX_PAYLOAD_BYTES = 3000
+
+
+@dataclass(frozen=True)
+class StockAddResult:
+    """What one Add Stock batch did, so the screen can say why fewer items went in than were sent."""
+
+    added: int
+    # Already in stock, already sold (in this product or any other), or repeated within the batch.
+    duplicates: int = 0
+    too_long: int = 0
+
+
 async def add_stock(
     session: AsyncSession, *, product_id: int, plaintext_payloads: list[str], added_by_admin_id: int
-) -> int:
-    """Encrypts every payload before it touches the DB — a dump alone never leaks sellable goods."""
+) -> StockAddResult:
+    """Encrypts every payload before it touches the DB — a dump alone never leaks sellable goods.
+
+    And refuses every login the store has seen before. One credential is one sale: the same login
+    uploaded twice would otherwise sit on the shelf as two items and reach two buyers. Duplicates
+    are recognised by fingerprint (`security.stock_fingerprint`), across every product and every
+    status, sold ones included — a login already delivered to somebody is never put on sale again.
+    """
     cipher = get_cipher()
-    encrypted = [cipher.encrypt(p) for p in plaintext_payloads if p.strip()]
-    batch_id = secrets.token_hex(4)
-    count = await StockRepo(session).bulk_add(
-        product_id, encrypted, batch_id=batch_id, added_by_admin_id=added_by_admin_id
-    )
+    seen: set[str] = set()
+    fresh: list[tuple[str, str]] = []
+    duplicates = too_long = 0
+    for payload in plaintext_payloads:
+        payload = payload.strip()
+        if not normalize_stock_text(payload):
+            continue
+        if len(payload.encode()) > MAX_PAYLOAD_BYTES:
+            too_long += 1
+            continue
+        fingerprint = stock_fingerprint(payload)
+        if fingerprint in seen:
+            duplicates += 1
+            continue
+        seen.add(fingerprint)
+        fresh.append((payload, fingerprint))
+
+    repo = StockRepo(session)
+    taken = await repo.existing_fingerprints([fingerprint for _, fingerprint in fresh])
+    rows = [(cipher.encrypt(payload), fp) for payload, fp in fresh if fp not in taken]
+    duplicates += len(fresh) - len(rows)
+
+    added = 0
+    if rows:
+        added = await repo.bulk_add(
+            product_id, rows, batch_id=secrets.token_hex(4), added_by_admin_id=added_by_admin_id
+        )
 
     product = await ProductRepo(session).get_by_id(product_id)
     if product is not None:
         await resync_status(session, product)
 
-    return count
+    return StockAddResult(added=added, duplicates=duplicates, too_long=too_long)
 
 
 async def resync_status(session: AsyncSession, product: Product) -> None:

@@ -28,12 +28,13 @@ from app.utils.time import as_utc
 HOLD_MINUTES = 5
 
 
-def _is_free(now: datetime):
+def is_free(now: datetime):
     """A credential nobody has a live claim on: plainly AVAILABLE, or HELD past its window.
 
     Lapsed holds are treated as free everywhere rather than only after the sweep relabels them.
     Waiting for the job would leave a credential unbuyable for up to one interval after its holder
-    walked away, and — worse — the two definitions could disagree.
+    walked away, and — worse — the two definitions could disagree. Public because the admin's
+    edit and remove on a single credential (stock_service) must use this exact definition too.
     """
     return or_(
         StockItem.status == StockStatus.AVAILABLE,
@@ -70,7 +71,7 @@ async def _take_one(session: AsyncSession, product_id: int, user_id: int) -> Sto
         candidate = (
             await session.execute(
                 select(StockItem.id)
-                .where(StockItem.product_id == product_id, _is_free(now))
+                .where(StockItem.product_id == product_id, is_free(now))
                 .order_by(StockItem.id)
                 .limit(1)
             )
@@ -80,7 +81,7 @@ async def _take_one(session: AsyncSession, product_id: int, user_id: int) -> Sto
 
         result = await session.execute(
             update(StockItem)
-            .where(StockItem.id == candidate, _is_free(now))
+            .where(StockItem.id == candidate, is_free(now))
             .values(
                 status=StockStatus.HELD,
                 held_by_user_id=user_id,
@@ -254,3 +255,54 @@ async def held_count(session: AsyncSession, product_id: int) -> int:
         )
     )
     return int(result.scalar_one())
+
+
+
+async def reserve_free(
+    session: AsyncSession, product_id: int, order_item_id: int, qty: int
+) -> list[StockItem]:
+    """FREE → RESERVED for an order item, one conditional UPDATE per credential. Returns what it got.
+
+    The same rule as a hold, applied to the purchase itself: the `WHERE` restates that the row is
+    still free, so two buyers racing for one credential cannot both reserve it — exactly one UPDATE
+    matches and the other gets `rowcount == 0` and moves on to the next candidate. It used to read
+    candidates and then set them RESERVED unconditionally, which was only safe because PostgreSQL
+    locks the rows (`FOR UPDATE SKIP LOCKED`) and SQLite's write lock happened to be taken earlier
+    in the same transaction. This holds on both without relying on either.
+
+    A short list is not an error here; the caller decides what running short means.
+    """
+    reserved: list[int] = []
+    while len(reserved) < qty:
+        now = datetime.now(UTC)
+        candidates = (
+            await session.execute(
+                select(StockItem.id)
+                .where(StockItem.product_id == product_id, is_free(now))
+                .order_by(StockItem.id)
+                .limit(qty - len(reserved))
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars().all()
+        if not candidates:
+            break
+        for candidate in candidates:
+            result = await session.execute(
+                update(StockItem)
+                .where(StockItem.id == candidate, is_free(now))
+                .values(
+                    status=StockStatus.RESERVED,
+                    order_item_id=order_item_id,
+                    held_by_user_id=None,
+                    held_at=None,
+                    held_until=None,
+                )
+            )
+            if result.rowcount:
+                reserved.append(candidate)
+            # rowcount 0: somebody else reserved it between the SELECT and the UPDATE. The next pass
+            # re-reads candidates, and a row that is no longer free is never picked again.
+    await session.flush()
+    # Re-read rather than trust the identity map: the rows were changed by a Core UPDATE, and an
+    # object loaded earlier in this session would otherwise still say AVAILABLE.
+    return [await session.get(StockItem, item_id, populate_existing=True) for item_id in reserved]

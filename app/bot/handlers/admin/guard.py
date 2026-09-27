@@ -19,6 +19,7 @@ from app.bot.states.product_form import (
     ProductForm,
     ProductImportForm,
     ProductSearchForm,
+    StockEditForm,
     StockUploadForm,
 )
 from app.bot.states.refund_wallet_form import (
@@ -62,7 +63,7 @@ _ADMIN_COMMANDS = (
 
 # CallbackData prefixes owned by the admin routers (see app/bot/callbacks.py).
 _ADMIN_CB_PREFIXES = frozenset(
-    {"acat", "aprod", "aord", "apay", "atick", "amisc", "auser", "aref"}
+    {"acat", "aprod", "astk", "aord", "apay", "atick", "amisc", "auser", "aref"}
 )
 
 # NavCB targets that only make sense for an admin.
@@ -91,6 +92,7 @@ _ADMIN_STATE_GROUPS = (
     RefundPayoutForm,
     RefundReleaseForm,
     RefundSanctionForm,
+    StockEditForm,
     StockUploadForm,
     UserBalanceForm,
     UserSearchForm,

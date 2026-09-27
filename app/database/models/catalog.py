@@ -105,6 +105,12 @@ class StockItem(BigIntPKMixin, Base):
     # deleted outright with the product — only sold ones survive, detached.
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), index=True)
     payload: Mapped[str] = mapped_column(String(4096))  # encrypted at rest via PayloadCipher
+    # `security.stock_fingerprint` of the plaintext: the one thing that recognises the same login
+    # when it is uploaded twice, because the ciphertext above differs on every encryption. Unique
+    # across the whole table, sold rows included — a login that has already reached one buyer must
+    # never be put on sale again, in this product or any other. NULL only for rows that predate it
+    # and could not be fingerprinted, or were duplicates already sold (see migration 0027).
+    content_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[StockStatus] = mapped_column(
         Enum(StockStatus, name="stock_status"), default=StockStatus.AVAILABLE
     )
@@ -126,4 +132,6 @@ class StockItem(BigIntPKMixin, Base):
         Index("ix_stock_items_product_status", "product_id", "status"),
         # The expiry sweep is `WHERE status = 'HELD' AND held_until <= now`, on every tick.
         Index("ix_stock_items_status_held_until", "status", "held_until"),
+        # The database's own guarantee that one login is stored — and so sold — once.
+        Index("ux_stock_items_content_hash", "content_hash", unique=True),
     )

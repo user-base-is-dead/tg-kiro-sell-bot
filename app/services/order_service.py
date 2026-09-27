@@ -75,14 +75,10 @@ async def _claim_stock(
             await session.flush()
             return held
 
-    claimed = await order_repo.claim_available_stock(product.id, 1)
+    claimed = await stock_hold_service.reserve_free(session, product.id, order_item.id, 1)
     if not claimed:
         raise UserError("errors.out_of_stock")
-    stock_item = claimed[0]
-    stock_item.status = StockStatus.RESERVED
-    stock_item.order_item_id = order_item.id
-    await session.flush()
-    return stock_item
+    return claimed[0]
 
 
 async def _claim_stock_many(
@@ -112,10 +108,11 @@ async def _claim_stock_many(
             claimed.append(held)
 
     if len(claimed) < qty:
-        for stock_item in await order_repo.claim_available_stock(product.id, qty - len(claimed)):
-            stock_item.status = StockStatus.RESERVED
-            stock_item.order_item_id = order_item.id
-            claimed.append(stock_item)
+        # Each one by conditional UPDATE (see stock_hold_service.reserve_free): a credential two
+        # buyers reach for at the same instant goes to exactly one of them.
+        claimed += await stock_hold_service.reserve_free(
+            session, product.id, order_item.id, qty - len(claimed)
+        )
 
     await session.flush()
     return claimed
