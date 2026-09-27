@@ -45,6 +45,7 @@ from app.bot.handlers.admin.warranty_claims import router as admin_warranty_clai
 from app.bot.middlewares.ban_check import BanCheckMiddleware
 from app.bot.middlewares.db_session import DbSessionMiddleware
 from app.bot.middlewares.error import ErrorMiddleware
+from app.bot.middlewares.pending_payment import PendingPaymentMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.bot.middlewares.user import UserMiddleware
 from app.core.config import get_settings
@@ -155,6 +156,8 @@ async def main() -> None:
     dp.update.middleware(DbSessionMiddleware(sessionmaker))
     dp.update.middleware(UserMiddleware(default_locale=settings.default_locale))
     dp.update.middleware(BanCheckMiddleware())
+    # After the user is known: any interaction other than paying cancels an open USDT checkout.
+    dp.update.middleware(PendingPaymentMiddleware())
 
     _include_routers(dp)
 

@@ -187,7 +187,9 @@ async def _start_warranty_on_delivery(
     return warranty
 
 
-async def _claim_crypto_invoice(session: AsyncSession, order: Order, product_id: int) -> None:
+async def _claim_crypto_invoice(
+    session: AsyncSession, order: Order, product_id: int, payment_id: int | None = None
+) -> None:
     """Attach the on-chain payment this order was bought with, if there was one.
 
     Crypto never pays for an order directly — pressing 💎 Pay with Crypto opens a wallet top-up
@@ -203,12 +205,16 @@ async def _claim_crypto_invoice(session: AsyncSession, order: Order, product_id:
     on chain, buys, and then buys the same product again out of leftover balance gets CRYPTO on the
     first order and WALLET on the second. A plain Top Up Wallet invoice is tagged `topup:` and is
     never matched here: that money genuinely became their balance.
+
+    `payment_id` names the invoice outright. The payment checker passes it when it places the order
+    a transfer just paid for: "the most recent one" is a guess, and a late transfer for another,
+    cancelled invoice of the same product confirmed in the same run would win it.
     """
     from sqlalchemy import select
 
     from app.database.models.crypto import CryptoPayment
 
-    result = await session.execute(
+    query = (
         select(CryptoPayment)
         .where(
             CryptoPayment.user_id == order.user_id,
@@ -219,7 +225,9 @@ async def _claim_crypto_invoice(session: AsyncSession, order: Order, product_id:
         .order_by(CryptoPayment.confirmed_at.desc().nullslast(), CryptoPayment.id.desc())
         .limit(1)
     )
-    payment = result.scalars().first()
+    if payment_id is not None:
+        query = query.where(CryptoPayment.id == payment_id)
+    payment = (await session.execute(query)).scalars().first()
     if payment is None:
         return
 
@@ -229,7 +237,13 @@ async def _claim_crypto_invoice(session: AsyncSession, order: Order, product_id:
 
 
 async def place_order(
-    session: AsyncSession, *, user_id: int, product_id: int, qty: int = 1
+    session: AsyncSession,
+    *,
+    user_id: int,
+    product_id: int,
+    qty: int = 1,
+    idempotency_key: str | None = None,
+    crypto_payment_id: int | None = None,
 ) -> PlacedOrder:
     """The whole purchase in one DB transaction: claim stock -> debit wallet -> deliver.
     Any failure (out of stock, insufficient balance) rolls the entire thing back — nothing
@@ -238,6 +252,12 @@ async def place_order(
     `qty` is checked against the shelf here and not only in the screen that asked for it. The
     number was typed minutes earlier and other buyers have been shopping since; the transaction is
     the only place that can promise it still holds.
+
+    `idempotency_key` defaults to the double-tap guard (same buyer, product and quantity inside
+    15 seconds). The payment checker passes one per invoice instead: two invoices paid in the same
+    run are two purchases, not a double tap, and the second must not be handed the first's order.
+    `crypto_payment_id` is the invoice that paid for it, when the caller knows (see
+    `_claim_crypto_invoice`).
     """
     qty = int(qty)
     if qty < 1:
@@ -254,7 +274,7 @@ async def place_order(
     if product.manual_stock is not None and product.manual_stock < qty:
         raise UserError("errors.out_of_stock")
 
-    idempotency_key = checkout_idempotency_key(user_id, product_id, qty)
+    idempotency_key = idempotency_key or checkout_idempotency_key(user_id, product_id, qty)
     order_repo = OrderRepo(session)
     existing = await order_repo.get_by_idempotency_key(idempotency_key)
     if existing is not None:
@@ -321,7 +341,7 @@ async def place_order(
 
     # After the debit, before delivery: the invoice is only meaningful once the money has actually
     # moved, and the buyer's own screens need the funding source the moment the order exists.
-    await _claim_crypto_invoice(session, order, product.id)
+    await _claim_crypto_invoice(session, order, product.id, crypto_payment_id)
 
     if stock_items:
         delivered_payloads = _deliver_auto(session, order, order_item, stock_items, now)

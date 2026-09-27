@@ -27,9 +27,11 @@ from app.core.security import get_cipher, normalize_stock_text
 from app.database.models.catalog import StockItem, StockStatus
 from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.product_repo import ProductRepo
-from app.database.repositories.stock_repo import SOLD, UNSOLD, StockRepo
+from app.database.repositories.stock_repo import CHECKOUT, IN_STOCK, SOLD_BUCKET, StockRepo
+from app.database.repositories.user_repo import UserRepo
 from app.services import stock_service
 from app.services.catalog_service import MAX_PAYLOAD_BYTES
+from app.services.stock_hold_service import HOLD_MINUTES
 from app.services.stock_service import EditOutcome
 from app.utils.pagination import Page
 from app.utils.text import PAD, as_admin_wrote_it, escape_html
@@ -62,8 +64,23 @@ def _is_changeable(item: StockItem, now: datetime) -> bool:
 
 def _handle(user) -> str:
     if user is None:
-        return "a deleted account"
+        return "a buyer"
     return f"@{escape_html(user.username)}" if user.username else f"id {user.telegram_id}"
+
+
+def _plain_handle(user) -> str:
+    """The same, for a button label — plain text, so nothing HTML-escaped."""
+    if user is None:
+        return "—"
+    return f"@{user.username}" if user.username else f"id {user.telegram_id}"
+
+
+async def _checkout_holder(session: AsyncSession, repo: StockRepo, item: StockItem):
+    """Who has this item in checkout: the buyer holding it, or the buyer whose order is taking it."""
+    if item.status is StockStatus.HELD and item.held_by_user_id is not None:
+        return await UserRepo(session).get_by_id(item.held_by_user_id)
+    _order, buyer = await repo.sale_of(item)
+    return buyer
 
 
 def _list_cb(pid: int, view: str, page: int = 1) -> str:
@@ -85,36 +102,63 @@ async def render_list(
         return None
 
     repo = StockRepo(session)
-    unsold = await repo.count_by_statuses(product_id, UNSOLD)
-    sold = await repo.count_by_statuses(product_id, SOLD)
-    view = "s" if view == "s" else "u"
-    page = Page(page=page_num, page_size=PAGE_SIZE, total_items=sold if view == "s" else unsold)
+    counts = {
+        "u": await repo.count_in(product_id, IN_STOCK),
+        "c": await repo.count_in(product_id, CHECKOUT),
+        "s": await repo.count_in(product_id, SOLD_BUCKET),
+    }
+    view = view if view in counts else "u"
+    page = Page(page=page_num, page_size=PAGE_SIZE, total_items=counts[view])
 
     lines = [
         f"📋 <b>Stock items</b> — {escape_html(product.name)}",
         "",
-        f"{note}🟢 Unsold: <b>{unsold}</b> · ✅ Sold: <b>{sold}</b>",
+        f"{note}🟢 In stock: <b>{counts['u']}</b> · 🛒 In checkout: <b>{counts['c']}</b> · "
+        f"✅ Sold: <b>{counts['s']}</b>",
         "",
     ]
     rows: list[list[InlineKeyboardButton]] = []
     cipher = get_cipher()
-    now = datetime.now(UTC)
 
     if view == "u":
-        if unsold:
+        if counts["u"]:
             lines.append(
-                "Tap a login to see it in full, edit it or remove it. Each one is sold to exactly "
-                "one buyer, then moves to ✅ Sold.\n🟡 = a buyer has it at checkout right now; it "
-                "is free again within 5 minutes if they don't pay."
+                "On the shelf, ready to sell. Tap a login to see it in full, edit it or remove it. "
+                "When a buyer starts paying it moves to 🛒 In checkout; once the payment is through "
+                "it's ✅ Sold — to that one buyer only."
             )
         else:
-            lines.append("Nothing unsold. Add logins with 📦 Add Stock.")
-        for item in await repo.list_unsold(product_id, offset=page.offset, limit=PAGE_SIZE):
-            mark = "🟡" if _held_now(item, now) else "🟢"
-            label = f"{mark} #{item.id} · {stock_service.preview(cipher.decrypt(item.payload))}"
+            lines.append("Nothing in stock. Add logins with 📦 Add Stock.")
+        for item in await repo.list_in(product_id, IN_STOCK, offset=page.offset, limit=PAGE_SIZE):
+            label = f"🟢 #{item.id} · {stock_service.preview(cipher.decrypt(item.payload))}"
             rows.append([btn(label, _item_cb(product_id, item.id, view, page.clamped_page), NEUTRAL)])
+    elif view == "c":
+        if counts["c"]:
+            lines.append(
+                "Taken off the shelf by a buyer who is paying right now — not sold yet. If the "
+                f"payment arrives it becomes ✅ Sold; if not, it's back in stock within "
+                f"{HOLD_MINUTES} minutes."
+            )
+        else:
+            lines.append("Nobody is checking out right now.")
+        for item in await repo.list_in(product_id, CHECKOUT, offset=page.offset, limit=PAGE_SIZE):
+            holder = await _checkout_holder(session, repo, item)
+            until = (
+                f"until {as_utc(item.held_until):%H:%M}"
+                if item.status is StockStatus.HELD and item.held_until
+                else "paying now"
+            )
+            rows.append(
+                [
+                    btn(
+                        f"🛒 #{item.id} · {_plain_handle(holder)} · {until}",
+                        _item_cb(product_id, item.id, view, page.clamped_page),
+                        NEUTRAL,
+                    )
+                ]
+            )
     else:
-        if sold:
+        if counts["s"]:
             lines.append(
                 "Every login that has been sold, newest first, with who got it. Sold logins can't "
                 "be edited or removed — they are the record of what each buyer received."
@@ -123,15 +167,10 @@ async def render_list(
             lines.append("Nothing sold yet.")
         for item, order, buyer in await repo.list_sold(product_id, offset=page.offset, limit=PAGE_SIZE):
             when = f" · {as_utc(order.placed_at):%d %b}" if order is not None and order.placed_at else ""
-            mark = "✅" if item.status is StockStatus.DELIVERED else "🔵"
-            # A button label is plain text: the handle must not arrive HTML-escaped.
-            who = f"@{buyer.username}" if buyer is not None and buyer.username else (
-                f"id {buyer.telegram_id}" if buyer is not None else "—"
-            )
             rows.append(
                 [
                     btn(
-                        f"{mark} #{item.id} · {who}{when}",
+                        f"✅ #{item.id} · {_plain_handle(buyer)}{when}",
                         _item_cb(product_id, item.id, view, page.clamped_page),
                         NEUTRAL,
                     )
@@ -151,18 +190,15 @@ async def render_list(
                 else btn(" ", "noop", NEUTRAL),
             ]
         )
+    tabs = (("u", "🟢 In stock"), ("c", "🛒 Checkout"), ("s", "✅ Sold"))
     rows.append(
         [
             btn(
-                f"{'• ' if view == 'u' else ''}🟢 Unsold ({unsold})",
-                _list_cb(product_id, "u"),
-                PRIMARY if view == "u" else NEUTRAL,
-            ),
-            btn(
-                f"{'• ' if view == 's' else ''}✅ Sold ({sold})",
-                _list_cb(product_id, "s"),
-                PRIMARY if view == "s" else NEUTRAL,
-            ),
+                f"{'• ' if view == code else ''}{label} ({counts[code]})",
+                _list_cb(product_id, code),
+                PRIMARY if view == code else NEUTRAL,
+            )
+            for code, label in tabs
         ]
     )
     rows.append([btn("📦 Add Stock", AdminProductCB(action="stock", id=str(product_id)).pack(), SUCCESS)])
@@ -199,23 +235,26 @@ async def render_item(
         return None
 
     now = datetime.now(UTC)
-    if item.status in (StockStatus.RESERVED, StockStatus.DELIVERED):
+    if item.status is StockStatus.DELIVERED:
         order, buyer = await repo.sale_of(item)
         ref = f"order <code>{order.order_number}</code>" if order is not None else "an order"
-        if item.status is StockStatus.DELIVERED:
-            when = f" on {as_utc(order.placed_at):%d %b %Y %H:%M} UTC" if order is not None and order.placed_at else ""
-            status = f"✅ Sold — {ref} to {_handle(buyer)}{when}"
-        else:
-            status = f"🔵 Being sold right now — {ref} to {_handle(buyer)}"
+        when = f" on {as_utc(order.placed_at):%d %b %Y %H:%M} UTC" if order is not None and order.placed_at else ""
+        status = f"✅ Sold — {ref} to {_handle(buyer)}{when}"
+    elif item.status is StockStatus.RESERVED:
+        order, buyer = await repo.sale_of(item)
+        ref = f" for order <code>{order.order_number}</code>" if order is not None else ""
+        status = f"🛒 In checkout — {_handle(buyer)}'s payment is going through{ref}. Not sold yet."
     elif _held_now(item, now):
+        holder = await _checkout_holder(session, repo, item)
         status = (
-            f"🟡 A buyer has it at checkout until {as_utc(item.held_until):%H:%M} UTC. It can be "
-            "changed once that ends, if they don't pay."
+            f"🛒 In checkout — {_handle(holder)} is paying for it until "
+            f"{as_utc(item.held_until):%H:%M} UTC. Not sold yet: if they don't pay, it goes back in "
+            "stock, and it can be edited or removed then."
         )
     elif item.status is StockStatus.VOID:
         status = "⚫ Taken off sale"
     else:
-        status = "🟢 Unsold — on sale"
+        status = "🟢 In stock — on sale"
 
     payload = get_cipher().decrypt(item.payload)
     content = payload if len(payload) <= _SHOW_IN_FULL else (

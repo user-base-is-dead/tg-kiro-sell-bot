@@ -47,7 +47,8 @@ class AdminProductCB(CallbackData, prefix="aprod"):
 class AdminStockCB(CallbackData, prefix="astk"):
     """One product's individual stock items (📋 Stock items), and the Add Stock split question.
 
-    "list" pages through a product's items — `view` "u" is unsold, "s" is sold; "item" opens one;
+    "list" pages through a product's items — `view` "u" is in stock, "c" in checkout (being paid
+    for), "s" sold; "item" opens one;
     "edit" asks for new content; "del" asks to confirm a removal and "del_ok" does it.
     "split" / "wsplit" answer "how should this pasted message be added?" in Add Stock and in the
     new-product wizard: `id` is the admin's message it refers to, `view` the answer (see

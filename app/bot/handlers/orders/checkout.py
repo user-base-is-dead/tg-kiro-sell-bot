@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.callbacks import NavCB, OrderCB
 from app.bot.filters.menu_button import menu_labels
 from app.bot.states.checkout_form import CheckoutForm
-from app.bot.delivery_notes import delivery_note
 from app.bot.keyboards.common import nav_row
 from app.bot.keyboards.products import category_back_target
 from app.bot.keyboards.styles import DANGER, NEUTRAL, PRIMARY, SUCCESS, btn
@@ -19,7 +18,7 @@ from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.wallet_repo import WalletRepo
 from app.locales.i18n import _load, t
-from app.services import announcement_service, order_service, order_thread_service, stock_hold_service
+from app.services import order_service, purchase_service, stock_hold_service
 from app.services.catalog_service import compute_display_status
 from app.utils.errors import UserError
 from app.utils.money import format_minor
@@ -364,17 +363,17 @@ async def on_pay_from_wallet(query: CallbackQuery, callback_data: OrderCB, sessi
 
 @router.callback_query(OrderCB.filter(F.action == "crypto"))
 async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, session: AsyncSession, user: User) -> None:
-    """Crypto route: reserve the credential, then open a top-up invoice for the shortfall.
+    """Crypto route: put the credentials in checkout, then open a 5-minute USDT invoice.
 
-    Picking a payment method is what starts the reservation, and crypto is a payment method — so a
-    credential is held here exactly as it is on the wallet route. Only that one credential is held;
-    the rest of the pool stays buyable by everyone else.
+    Picking a payment method is what starts the reservation, and crypto is a payment method — so the
+    credentials are HELD here exactly as on the wallet route: off the shelf, in checkout, not sold.
+    Only the ones being bought are held; the rest of the pool stays buyable by everyone else.
 
-    The hold still lasts five minutes while a transfer can take longer. That is deliberate: the
-    money lands in the wallet either way, so a buyer whose hold lapses keeps the balance and can
-    spend it on anything, including re-buying this product if a credential is free. Holding stock
-    open-endedly against an unconfirmed chain transfer would take it from buyers who are ready to
-    pay now.
+    The invoice lives exactly as long as the hold (payments/invoices.PAYMENT_WINDOW_MINUTES). Paid in
+    time, the checker job places the order itself and the buyer gets the goods in this chat. Not paid
+    in time, or abandoned (✖️ Cancel, or any other button or command — see
+    middlewares/pending_payment.py), and the credentials go straight back in stock. A transfer that
+    still arrives afterwards is credited to the wallet, never lost.
     """
     if not query.message:
         return
@@ -405,17 +404,12 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
             await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
             return
 
-    # The invoice is told what it is paying for. It is still mechanically a wallet top-up, but the
-    # buyer came here from a product page and reading "Top-Up Amount" on the screen they opened to
-    # buy something reads like the bot lost track of the purchase — and Cancel used to dump them on
-    # the generic Top Up Wallet screen, miles from the product they were mid-purchase on.
+    # The invoice is told what it is paying for, and how many: when the transfer arrives the checker
+    # places this exact order itself, so the buyer never has to come back and press Buy Now again.
     text, markup = await render_payment_details(
-        session, user.id, invoice_minor / 100, user.locale, purchase_product_id=product.id
+        session, user.id, invoice_minor / 100, user.locale, purchase_product_id=product.id, qty=qty
     )
-    await query.message.edit_text(
-        text + "\n\n⚡ <b>Once the payment confirms, tap Buy Now again to finish your order.</b>",
-        reply_markup=markup,
-    )
+    await query.message.edit_text(text, reply_markup=markup)
     await query.answer()
 
 
@@ -447,6 +441,9 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
     if not query.message:
         return
 
+    # Read before anything can roll back: a rollback expires every loaded row, and touching `user`
+    # afterwards would try to lazy-load it outside the async context.
+    locale = user.locale
     try:
         placed = await order_service.place_order(
             session,
@@ -455,44 +452,16 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
             qty=callback_data.qty,
         )
     except UserError as exc:
-        await query.answer(t(exc.i18n_key, user.locale), show_alert=True)
+        # place_order had already written the order and moved the buyer's credentials to RESERVED
+        # when the wallet turned out to be short. Swallowing the error used to let the session commit
+        # all of that anyway: a PENDING order nobody paid for, holding a login in "being sold" for
+        # ever. The purchase is all or nothing, so everything it wrote goes — the held credentials
+        # stay held for the rest of the buyer's five minutes, then return to stock.
+        await session.rollback()
+        await query.answer(t(exc.i18n_key, locale), show_alert=True)
         return
 
-    order = placed.order
-    lines = [t("orders.placed", user.locale, order_number=order.order_number)]
-    if placed.delivered_payloads:
-        warranty_days = placed.order_item.warranty_days
-        # Numbered when there is more than one, so a buyer who ordered five can tell at a glance
-        # that five arrived and which line is which.
-        payload = (
-            placed.delivered_payloads[0]
-            if len(placed.delivered_payloads) == 1
-            else "\n".join(f"{i}. {p}" for i, p in enumerate(placed.delivered_payloads, start=1))
-        )
-        lines.append(
-            t("orders.auto_delivery", user.locale, payload=payload, warranty_days=warranty_days)
-        )
-    else:
-        lines.append(t("orders.manual_pending", user.locale))
-        # Nothing about a manual order reaches an admin on its own — push it, or it waits for
-        # somebody to open the admin panel out of curiosity.
-        await order_service.notify_admins_of_manual_order(query.bot, session, order)
-
-    # Both routes get the how-to-use-it note: an AUTO buyer needs it alongside the key they just
-    # got, and a MANUAL buyer needs to know what is coming before it arrives.
-    note = await delivery_note(session, placed.order_item.product_id, user.locale)
-    if note:
-        lines.append(note)
-
-    # After the buyer has been served, never before: if this purchase emptied the shelf, everyone
-    # else hears about it. No admin approval — the event already happened.
-    await announcement_service.maybe_announce_sold_out(
-        query.bot, session, placed.order_item.product_id
-    )
-
-    # Opens this order's own topic in the orders group and posts its card plus whatever has already
-    # happened. Best-effort by design: the purchase is done either way.
-    await order_thread_service.sync(query.bot, session, order)
-
-    await query.message.edit_text("\n\n".join(lines))
+    text = await purchase_service.buyer_message(session, placed, locale)
+    await purchase_service.after_purchase(query.bot, session, placed)
+    await query.message.edit_text(text)
     await query.answer()

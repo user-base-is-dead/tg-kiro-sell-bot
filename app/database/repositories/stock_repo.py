@@ -1,17 +1,34 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from datetime import UTC, datetime
+
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.catalog import StockItem, StockStatus
 from app.database.models.order import Order, OrderItem
 from app.database.models.user import User
 
-# The two halves of a product's stock as the admin sees them. Unsold is everything still on the
-# shelf, including a credential somebody is holding at checkout right now; sold is everything that
-# has left it, including the few seconds a credential spends RESERVED inside a purchase.
-UNSOLD = (StockStatus.AVAILABLE, StockStatus.HELD)
-SOLD = (StockStatus.RESERVED, StockStatus.DELIVERED)
+# The three places a product's stock can be, as the admin sees them:
+#   IN_STOCK  on the shelf — AVAILABLE, or held by a buyer whose checkout window already ran out;
+#   CHECKOUT  taken off the shelf by a buyer who is paying right now — a live hold, or RESERVED for
+#             the instant a purchase is being written. Not sold: if the payment doesn't happen it
+#             goes back to IN_STOCK;
+#   SOLD      DELIVERED to a buyer, for good.
+IN_STOCK, CHECKOUT, SOLD_BUCKET = "stock", "checkout", "sold"
+
+
+def bucket_condition(bucket: str, now: datetime | None = None):
+    now = now or datetime.now(UTC)
+    live_hold = and_(StockItem.status == StockStatus.HELD, StockItem.held_until > now)
+    if bucket == IN_STOCK:
+        return or_(
+            StockItem.status == StockStatus.AVAILABLE,
+            and_(StockItem.status == StockStatus.HELD, StockItem.held_until <= now),
+        )
+    if bucket == CHECKOUT:
+        return or_(live_hold, StockItem.status == StockStatus.RESERVED)
+    return StockItem.status == StockStatus.DELIVERED
 
 # SQLite caps bound parameters per statement; a paste of a few hundred logins must not hit it.
 _IN_CHUNK = 500
@@ -66,19 +83,19 @@ class StockRepo:
     async def get(self, stock_item_id: int) -> StockItem | None:
         return await self._session.get(StockItem, stock_item_id, populate_existing=True)
 
-    async def count_by_statuses(self, product_id: int, statuses) -> int:
+    async def count_in(self, product_id: int, bucket: str) -> int:
         result = await self._session.execute(
             select(func.count())
             .select_from(StockItem)
-            .where(StockItem.product_id == product_id, StockItem.status.in_(statuses))
+            .where(StockItem.product_id == product_id, bucket_condition(bucket))
         )
         return int(result.scalar_one())
 
-    async def list_unsold(self, product_id: int, *, offset: int, limit: int) -> list[StockItem]:
-        """Unsold credentials, oldest first — the order they are sold in."""
+    async def list_in(self, product_id: int, bucket: str, *, offset: int, limit: int) -> list[StockItem]:
+        """In stock or in checkout, oldest first — the order they are sold in."""
         result = await self._session.execute(
             select(StockItem)
-            .where(StockItem.product_id == product_id, StockItem.status.in_(UNSOLD))
+            .where(StockItem.product_id == product_id, bucket_condition(bucket))
             .order_by(StockItem.id)
             .offset(offset)
             .limit(limit)
@@ -95,7 +112,7 @@ class StockRepo:
             .outerjoin(OrderItem, OrderItem.id == StockItem.order_item_id)
             .outerjoin(Order, Order.id == OrderItem.order_id)
             .outerjoin(User, User.id == Order.user_id)
-            .where(StockItem.product_id == product_id, StockItem.status.in_(SOLD))
+            .where(StockItem.product_id == product_id, bucket_condition(SOLD_BUCKET))
             .order_by(StockItem.id.desc())
             .offset(offset)
             .limit(limit)

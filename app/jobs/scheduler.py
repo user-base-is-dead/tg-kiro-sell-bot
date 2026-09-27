@@ -33,7 +33,7 @@ def build_scheduler(sessionmaker: async_sessionmaker, bot: Bot) -> AsyncIOSchedu
         archive_stale_tickets, "interval", hours=1, args=[sessionmaker, bot], id="ticket_archival", coalesce=True
     )
     scheduler.add_job(
-        check_crypto_payments, "interval", seconds=30, args=[sessionmaker], id="crypto_payments", coalesce=True
+        check_crypto_payments, "interval", seconds=30, args=[sessionmaker, bot], id="crypto_payments", coalesce=True
     )
     # Frequent because a freed credential is a sale waiting to happen, and cheap because it is one
     # indexed UPDATE. Correctness does not ride on the interval — every read already treats a lapsed
