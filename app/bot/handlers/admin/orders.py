@@ -864,12 +864,68 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
     await AuditRepo(session).log(
         actor_telegram_id=user.telegram_id, action="order.fulfill", target_type="order", target_id=order.id
     )
-    # Carries its own exits, like the decline receipt — a bare "marked delivered" left the admin on a
-    # dead message with nothing to press.
     await order_thread_service.sync(message.bot, session, order)
 
+    # The buyer is sent their goods BEFORE the receipt is composed, so the receipt can state whether
+    # the delivery actually landed.
+    #
+    # Deliberately NOT skipped when the person fulfilling is also the buyer, unlike the decline path
+    # above. That guard is right there because a decline receipt restates everything the buyer's DM
+    # would have said, so the DM is pure duplication. Here it is the opposite: the receipt carries no
+    # payload, so skipping the DM meant the goods were never delivered at all — the order flipped to
+    # COMPLETED while the buyer's chat sat on "🛠️ Preparing your order" for ever. A staff member in
+    # the orders group buying from the shop they work for hit exactly that, and so does anyone
+    # testing the flow with one account. Fulfilling in a group and receiving in a DM are two
+    # different chats anyway; in the one case where they are the same chat, a second copy of the
+    # content the admin just typed is a far better failure than silence.
+    buyer = await UserRepo(session).get_by_id(order.user_id)
+    sent_to_buyer = False
+    problem = "they have no account row to message"
+    if buyer is not None:
+        # `chat_id` is only captured from a private message, so it can still be unset for someone who
+        # has only ever pressed buttons in a group. `telegram_id` addresses the same private chat and
+        # is what every other notifier here falls back to — `buyer.chat_id` alone used to drop the
+        # delivery silently.
+        try:
+            warranty_days = order.items[0].warranty_days if order.items else 0
+            # Word for word the message an auto-delivered buyer gets. A hand-fulfilled order is the
+            # same purchase with a slower shelf behind it, and it used to arrive looking like a
+            # different, more improvised thing — no warranty line, its own heading, its own layout.
+            await message.bot.send_message(
+                buyer.chat_id or buyer.telegram_id,
+                t(
+                    "orders.auto_delivery",
+                    buyer.locale,
+                    payload=as_admin_wrote_it(message),
+                    warranty_days=warranty_days,
+                ),
+            )
+            sent_to_buyer = True
+        except Exception as exc:  # noqa: BLE001 — the order is fulfilled; report, never raise
+            problem = f"the bot couldn't message them — {exc}"
+            logger.warning(
+                "Delivery for %s couldn't be sent to buyer %s (%s)",
+                order.order_number,
+                order.user_id,
+                exc,
+            )
+
+    receipt = f"✅ Order <code>{order.order_number}</code> marked delivered."
+    if sent_to_buyer:
+        receipt += "\n📬 The content has been sent to the buyer."
+    else:
+        # Loud, because this is the one failure that leaves a paid order undelivered while the record
+        # says otherwise — and nothing retries it.
+        receipt += (
+            f"\n\n⚠️ <b>The buyer has NOT received it</b> — {problem}.\n"
+            "The order is already marked delivered, so nothing will retry on its own. Send them the "
+            "content above yourself, or open 🎧 Support to reach them."
+        )
+
+    # Carries its own exits, like the decline receipt — a bare "marked delivered" left the admin on a
+    # dead message with nothing to press.
     await message.answer(
-        f"✅ Order <code>{order.order_number}</code> marked delivered.",
+        receipt,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [btn("📜 Open the order", AdminOrderCB(action="view", id=order.id).pack(), PRIMARY)],
@@ -880,22 +936,3 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
             ]
         ),
     )
-
-    buyer = await UserRepo(session).get_by_id(order.user_id)
-    if buyer and buyer.chat_id and buyer.telegram_id != user.telegram_id:
-        try:
-            # Word for word the message an auto-delivered buyer gets. A hand-fulfilled order is the
-            # same purchase with a slower shelf behind it, and it used to arrive looking like a
-            # different, more improvised thing — no warranty line, its own heading, its own layout.
-            warranty_days = order.items[0].warranty_days if order.items else 0
-            await message.bot.send_message(
-                buyer.chat_id,
-                t(
-                    "orders.auto_delivery",
-                    buyer.locale,
-                    payload=as_admin_wrote_it(message),
-                    warranty_days=warranty_days,
-                ),
-            )
-        except Exception:  # noqa: BLE001 — best-effort notify; buyer may have blocked the bot
-            await message.answer("⚠️ Couldn't DM the buyer (they may have blocked the bot).")
