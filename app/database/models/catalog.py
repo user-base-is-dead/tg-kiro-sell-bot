@@ -3,7 +3,17 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    false,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, BigIntPKMixin, TimestampMixin
@@ -88,6 +98,21 @@ class Product(BigIntPKMixin, TimestampMixin, Base):
     warranty_days: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str | None] = mapped_column(String(1024))
     max_per_user: Mapped[int | None] = mapped_column(Integer)
+    # Opt out of "one login, one sale" for this product only.
+    #
+    # The default is the rule the store is built on: a credential reaches exactly one buyer, enforced
+    # by the unique index on `StockItem.content_hash` below. That is wrong for a *shared* account —
+    # one login the shop deliberately sells to many people — where every copy on the shelf is the
+    # same text and the fingerprint rejects all but the first.
+    #
+    # When this is on, stock added to this product is stored with `content_hash = NULL`: NULL is
+    # exempt from a unique index on both SQLite and Postgres, so unlimited copies can sit side by
+    # side while the guarantee stays fully intact for every product that did not opt out. Per
+    # product rather than global precisely so turning it on for one shared account cannot quietly
+    # let a single-use licence key be sold twice.
+    allow_duplicate_stock: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -109,7 +134,10 @@ class StockItem(BigIntPKMixin, Base):
     # when it is uploaded twice, because the ciphertext above differs on every encryption. Unique
     # across the whole table, sold rows included — a login that has already reached one buyer must
     # never be put on sale again, in this product or any other. NULL only for rows that predate it
-    # and could not be fingerprinted, or were duplicates already sold (see migration 0027).
+    # and could not be fingerprinted, were duplicates already sold (see migration 0027), or belong
+    # to a product with `allow_duplicate_stock` on — a shared account, where many copies of one
+    # login are the point. NULL is exempt from the unique index on every dialect we run, which is
+    # exactly how that opt-out is expressed without weakening the index for anybody else.
     content_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[StockStatus] = mapped_column(
         Enum(StockStatus, name="stock_status"), default=StockStatus.AVAILABLE

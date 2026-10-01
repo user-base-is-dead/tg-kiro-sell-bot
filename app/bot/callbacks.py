@@ -39,7 +39,9 @@ class AdminCategoryCB(CallbackData, prefix="acat"):
 class AdminProductCB(CallbackData, prefix="aprod"):
     # "delete" only asks for confirmation; "delete_ok" is the one that actually removes the row.
     # "cat" opens one category folder in the admin list; `id` is the category, not a product.
-    action: str  # "list" | "cat" | "add" | "edit" | "delete" | "delete_ok" | "toggle" | "view" | "stock"
+    # "dup" flips `allow_duplicate_stock` — whether this product may hold several copies of one
+    # login, which is what a shared account needs.
+    action: str  # "list" | "cat" | "add" | "edit" | "delete" | "delete_ok" | "toggle" | "dup" | "view" | "stock"
     id: str = ""
     page: int = 1
 

@@ -43,7 +43,12 @@ async def edit_item(
     session: AsyncSession, *, stock_item_id: int, product_id: int, new_payload: str
 ) -> tuple[EditOutcome, StockItem | None]:
     """Replace an unsold credential's content. Returns the outcome and, for DUPLICATE, the row that
-    already holds that login."""
+    already holds that login.
+
+    A product with `allow_duplicate_stock` on never reports DUPLICATE: it sells a shared login, so
+    matching an existing row is the intended state rather than a collision. Its rows keep a NULL
+    fingerprint for the same reason `catalog_service.add_stock` writes one.
+    """
     payload = new_payload.strip()
     if not normalize_stock_text(payload):
         return EditOutcome.EMPTY, None
@@ -59,10 +64,14 @@ async def edit_item(
     if cipher.decrypt(item.payload) == payload:
         return EditOutcome.UNCHANGED, None
 
-    fingerprint = stock_fingerprint(payload)
-    clash = await repo.find_by_fingerprint(fingerprint)
-    if clash is not None and clash.id != item.id:
-        return EditOutcome.DUPLICATE, clash
+    product = await ProductRepo(session).get_by_id(product_id)
+    if product is not None and product.allow_duplicate_stock:
+        fingerprint = None
+    else:
+        fingerprint = stock_fingerprint(payload)
+        clash = await repo.find_by_fingerprint(fingerprint)
+        if clash is not None and clash.id != item.id:
+            return EditOutcome.DUPLICATE, clash
 
     result = await session.execute(
         update(StockItem)

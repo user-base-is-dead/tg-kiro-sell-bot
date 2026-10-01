@@ -41,13 +41,17 @@ class StockRepo:
     async def bulk_add(
         self,
         product_id: int,
-        rows: list[tuple[str, str]],
+        rows: list[tuple[str, str | None]],
         *,
         batch_id: str,
         added_by_admin_id: int,
     ) -> int:
         """Insert (ciphertext, fingerprint) pairs as AVAILABLE. The caller has already deduped them;
-        the unique index on `content_hash` is the backstop if two admins race with the same login."""
+        the unique index on `content_hash` is the backstop if two admins race with the same login.
+
+        A NULL fingerprint means this product sells a shared login and opted out of that rule
+        (`Product.allow_duplicate_stock`) — NULL is exempt from the index, so copies can coexist.
+        """
         items = [
             StockItem(
                 product_id=product_id,

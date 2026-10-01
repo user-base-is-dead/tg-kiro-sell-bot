@@ -37,6 +37,7 @@ from app.database.models.catalog import (
     ProductStatus,
     StockItem,
 )
+from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.category_repo import CategoryRepo
 from app.database.repositories.product_repo import ProductRepo
 from app.services.announcement_service import (
@@ -292,6 +293,19 @@ def _detail_keyboard(product, credentials: int = 0) -> InlineKeyboardMarkup:
                 btn("📋 Stock items", AdminStockCB(action="list", pid=pid).pack(), PRIMARY),
             ],
             [
+                # Carries its own state like the Fulfillment button above, for the same reason: this
+                # decides whether a paste of the same login is stocked or skipped, and an admin
+                # staring at "Skipped 1 duplicate(s)" needs to see which way it is set without
+                # opening anything.
+                btn(
+                    "♻️ Duplicate logins: allowed"
+                    if product.allow_duplicate_stock
+                    else "🔒 Duplicate logins: blocked",
+                    AdminProductCB(action="dup", id=pid).pack(),
+                    PRIMARY,
+                )
+            ],
+            [
                 btn(
                     toggle_label,
                     AdminProductCB(action="toggle", id=pid).pack(),
@@ -532,7 +546,8 @@ async def _render_detail(session: AsyncSession, product_id: int) -> tuple[str, I
         # starts contradicting itself.
         f"Fulfillment: {_fulfillment_label(product, credentials).split(': ')[-1]}\n"
         f"Warranty: {product.warranty_days} days\n"
-        f"Description: {product.description or '—'}\n"
+        + ("Duplicate logins: ♻️ allowed (shared account)\n" if product.allow_duplicate_stock else "")
+        + f"Description: {product.description or '—'}\n"
         f"Delivery info: {product.delivery_info or '—'}\n"
         f"{PAD}"
     )
@@ -593,6 +608,38 @@ async def toggle_product(
     product.is_active = not product.is_active
     await session.flush()
     await view_product(query, callback_data, session, state)
+
+
+@router.callback_query(AdminProductCB.filter(F.action == "dup"))
+async def toggle_duplicate_stock(
+    query: CallbackQuery, callback_data: AdminProductCB, session: AsyncSession, state: FSMContext
+) -> None:
+    """Flip "one login, one sale" off (or back on) for this product alone.
+
+    Audited, unlike the plain Enable/Disable toggle: this one changes whether the same credential can
+    reach more than one buyer, which is the kind of decision somebody will want to trace back to a
+    person and a time.
+    """
+    product = await ProductRepo(session).get_by_id(int(callback_data.id))
+    if product is None:
+        await query.answer("Product not found.", show_alert=True)
+        return
+    product.allow_duplicate_stock = not product.allow_duplicate_stock
+    await session.flush()
+    await AuditRepo(session).log(
+        actor_telegram_id=query.from_user.id,
+        action="product.allow_duplicate_stock",
+        target_type="product",
+        target_id=str(product.id),
+        metadata={"allow_duplicate_stock": product.allow_duplicate_stock, "name": product.name},
+    )
+    await view_product(query, callback_data, session, state)
+    await query.answer(
+        "Duplicate logins allowed — paste the same credentials as many times as you need to sell it."
+        if product.allow_duplicate_stock
+        else "Duplicate logins blocked — each login can only be sold once again.",
+        show_alert=True,
+    )
 
 
 @router.callback_query(AdminProductCB.filter(F.action == "delete"))
@@ -761,8 +808,9 @@ async def _show_step(
         await send(
             f"{head}Send the stock — a licence key, account credentials, or many logins pasted at "
             "once. If the message has several lines you'll be asked how to split it. Each item is "
-            "sold to one buyer only, and a login already in stock or already sold is skipped. "
-            "Everything is encrypted before it touches the database.\n\n"
+            "sold to one buyer only, and a login already in stock or already sold is skipped — for a "
+            "shared account you sell to several buyers, create it and tap 🔒 Duplicate logins on the "
+            "product page first. Everything is encrypted before it touches the database.\n\n"
             "Skip to create the product OUT OF STOCK and add them later.",
             reply_markup=_step_keyboard("stock", extra=[[btn("⏭️ Skip", "pskip:stock", PRIMARY)]]),
         )
@@ -1090,6 +1138,16 @@ async def _add_stock_screen(
     product = await ProductRepo(session).get_by_id(product_id)
     name = product.name if product else "this product"
     in_stock = await ProductRepo(session).available_stock_count(product_id)
+    # The rule that decides whether a paste lands or is skipped, stated in the screen that takes the
+    # paste — not only on the product page where the switch lives.
+    rule = (
+        "♻️ <b>Duplicate logins are allowed</b> on this product, so the same credentials can be "
+        "sent as many times as you want to sell them — one copy per buyer."
+        if product is not None and product.allow_duplicate_stock
+        else "Each item is sold to <b>one buyer only</b>. A login that is already in stock, or was "
+        "already sold, is skipped — tap <b>🔒 Duplicate logins</b> on the product page if this is a "
+        "shared account you sell to several people."
+    )
     return (
         f"📦 <b>Add Stock</b> — {name}\n\n"
         f"{note}"
@@ -1098,8 +1156,7 @@ async def _add_stock_screen(
         "message has several lines you'll be asked how to split it: one login per line, one per "
         "block, or the whole message as one item. They are encrypted before they touch the "
         "database.\n\n"
-        "Each item is sold to <b>one buyer only</b>. A login that is already in stock, or was "
-        "already sold, is skipped. To see, edit or remove what's loaded, use 📋 Stock items.\n\n"
+        f"{rule} To see, edit or remove what's loaded, use 📋 Stock items.\n\n"
         "Keep sending messages to add more, or press 🔙 Back when you're done.",
         InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1254,7 +1311,9 @@ def _skipped_note(result: StockAddResult) -> str:
     if result.duplicates:
         notes.append(
             f"⚠️ Skipped <b>{result.duplicates}</b> duplicate(s) — already in stock, already sold, "
-            "or repeated in what you sent. One login is only ever sold once."
+            "or repeated in what you sent. One login is only ever sold once.\n"
+            "♻️ Selling a <b>shared</b> account to several buyers? Open the product and tap "
+            "<b>🔒 Duplicate logins</b> to allow copies, then send them again."
         )
     if result.too_long:
         notes.append(

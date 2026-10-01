@@ -172,14 +172,23 @@ async def add_stock(
 ) -> StockAddResult:
     """Encrypts every payload before it touches the DB — a dump alone never leaks sellable goods.
 
-    And refuses every login the store has seen before. One credential is one sale: the same login
-    uploaded twice would otherwise sit on the shelf as two items and reach two buyers. Duplicates
-    are recognised by fingerprint (`security.stock_fingerprint`), across every product and every
-    status, sold ones included — a login already delivered to somebody is never put on sale again.
+    And, by default, refuses every login the store has seen before. One credential is one sale: the
+    same login uploaded twice would otherwise sit on the shelf as two items and reach two buyers.
+    Duplicates are recognised by fingerprint (`security.stock_fingerprint`), across every product and
+    every status, sold ones included — a login already delivered to somebody is never put on sale
+    again.
+
+    A product with `allow_duplicate_stock` on is the deliberate exception: a shared account is one
+    login sold to many people, so every copy is the same text and the rule above would reject all but
+    the first. For those, the fingerprint is not computed and `content_hash` is stored NULL — exempt
+    from the unique index — so the guarantee stays exactly as strict for every other product.
     """
     cipher = get_cipher()
+    product = await ProductRepo(session).get_by_id(product_id)
+    allow_duplicates = product is not None and product.allow_duplicate_stock
+
     seen: set[str] = set()
-    fresh: list[tuple[str, str]] = []
+    fresh: list[tuple[str, str | None]] = []
     duplicates = too_long = 0
     for payload in plaintext_payloads:
         payload = payload.strip()
@@ -187,6 +196,12 @@ async def add_stock(
             continue
         if len(payload.encode()) > MAX_PAYLOAD_BYTES:
             too_long += 1
+            continue
+        if allow_duplicates:
+            # No fingerprint at all, so nothing to compare against and nothing to collide with —
+            # including the identical line twice in this very paste, which for a shared account is
+            # the admin saying "sell it to two people".
+            fresh.append((payload, None))
             continue
         fingerprint = stock_fingerprint(payload)
         if fingerprint in seen:
@@ -196,9 +211,13 @@ async def add_stock(
         fresh.append((payload, fingerprint))
 
     repo = StockRepo(session)
-    taken = await repo.existing_fingerprints([fingerprint for _, fingerprint in fresh])
-    rows = [(cipher.encrypt(payload), fp) for payload, fp in fresh if fp not in taken]
-    duplicates += len(fresh) - len(rows)
+    rows: list[tuple[str, str | None]]
+    if allow_duplicates:
+        rows = [(cipher.encrypt(payload), None) for payload, _ in fresh]
+    else:
+        taken = await repo.existing_fingerprints([fp for _, fp in fresh if fp is not None])
+        rows = [(cipher.encrypt(payload), fp) for payload, fp in fresh if fp not in taken]
+        duplicates += len(fresh) - len(rows)
 
     added = 0
     if rows:
@@ -206,7 +225,6 @@ async def add_stock(
             product_id, rows, batch_id=secrets.token_hex(4), added_by_admin_id=added_by_admin_id
         )
 
-    product = await ProductRepo(session).get_by_id(product_id)
     if product is not None:
         await resync_status(session, product)
 
