@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -461,7 +462,29 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
         await query.answer(t(exc.i18n_key, locale), show_alert=True)
         return
 
+    # Built before the commit (it only reads) but sent after it, because this message *is* the goods:
+    # for an AUTO product the text contains the decrypted login.
     text = await purchase_service.buyer_message(session, placed, locale)
+
+    # The sale is made durable before the credentials leave the building. It used to be the other way
+    # round — the payload was shown while the transaction was still open and DbSessionMiddleware
+    # committed afterwards — so anything that failed at commit time (a deadlock, a dropped
+    # connection, a unique-constraint conflict from a concurrent double-tap) rolled back the order
+    # and the debit *after* the buyer had read the login, and handed the stock item back to the shelf
+    # for somebody else to buy. Free product, and the same credential delivered twice.
+    await session.commit()
+
+    # Best-effort now that the money and the order are final, and a failed edit must not swallow the
+    # payload: this screen can be the message a broadcast attached the button to, and `edit_text` is
+    # rejected outright on media — same reason `products.browse._show` exists.
+    try:
+        await query.message.edit_text(text)
+    except TelegramBadRequest:
+        await query.message.answer(text)
+
+    # After the commit as well. These are side effects — the orders-group topic, the manual-fulfilment
+    # prompt, the sold-out announcement — and `order_thread_service.sync` is self-healing: whatever it
+    # fails to post goes out on the next action. The thread bookkeeping it writes is committed by
+    # DbSessionMiddleware when this handler returns.
     await purchase_service.after_purchase(query.bot, session, placed)
-    await query.message.edit_text(text)
     await query.answer()

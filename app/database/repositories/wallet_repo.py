@@ -21,8 +21,27 @@ class WalletRepo:
         return wallet
 
     async def get_locked(self, wallet_id: int) -> Wallet:
-        """SELECT ... FOR UPDATE — serializes concurrent debits/credits on the same wallet."""
-        result = await self._session.execute(select(Wallet).where(Wallet.id == wallet_id).with_for_update())
+        """SELECT ... FOR UPDATE — serializes concurrent debits/credits on the same wallet.
+
+        `populate_existing` is what makes the lock mean anything. Every caller reaches here having
+        already loaded this wallet (`wallet_service.debit` and friends all do `get_or_create()` and
+        then `get_locked()`), so the row is in the session's identity map — and SQLAlchemy will not
+        overwrite attributes it has already loaded. Without this the locked re-read was discarded and
+        the balance checked was the one read *before* the lock was taken, which is precisely the value
+        the lock exists to invalidate.
+
+        That turned the lock into decoration, and the window was not a narrow race but the lock wait
+        itself: a second purchase would block here until the first committed, then wake up, keep its
+        pre-lock balance, pass the affordability check and spend the same money again. Measured, not
+        guessed — a $10 wallet bought two $10 products and ended at $0 with two ledger rows of -$10
+        and both claiming `balance_after_minor = 0`.
+        """
+        result = await self._session.execute(
+            select(Wallet)
+            .where(Wallet.id == wallet_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         wallet = result.scalar_one()
         return wallet
 
