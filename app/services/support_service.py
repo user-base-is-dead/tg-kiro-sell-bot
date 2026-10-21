@@ -257,6 +257,40 @@ async def create_ticket(
     return NewTicket(ticket, True)
 
 
+PAYMENT_ISSUE_CATEGORY = "Billing"
+
+
+async def open_payment_issue(bot: Bot, session: AsyncSession, *, user: User, note: str) -> SupportTicket | None:
+    """Put a buyer who paid and did not get what they paid for in front of support, unasked.
+
+    The money is safe in their wallet by the time this runs, but a buyer who sent USDT for a product
+    and got "added to your balance" instead is owed a person, not a button to press. So the ticket
+    is opened for them, with the facts already written down, and their next message in the bot lands
+    in it.
+
+    One live conversation per person still holds: a buyer who already has a ticket open gets the note
+    posted into that one instead of a second ticket beside it. Returns the ticket the note went to,
+    or None if support could not be reached — the caller then falls back to telling them to ask.
+    """
+    existing = await SupportRepo(session).get_open_for_user(user.id)
+    if existing is not None:
+        try:
+            await relay_user_message(bot, session, ticket=existing, user=user, text=note)
+        except UserError:
+            return None
+        return existing
+
+    ticket, reached_staff = await create_ticket(
+        bot,
+        session,
+        user=user,
+        category=PAYMENT_ISSUE_CATEGORY,
+        subject=note,
+        support_group_id=get_settings().support_group_id,
+    )
+    return ticket if reached_staff else None
+
+
 # Appended to the admin fallback DM, so whoever reads it knows what the buyer was told and that
 # nothing is waiting on them in the bot — only the group needs fixing.
 _UNDELIVERED_NOTE = (

@@ -14,7 +14,7 @@ from app.database.models.wallet import TxnType
 from app.database.repositories.product_repo import ProductRepo
 from app.database.repositories.user_repo import UserRepo
 from app.locales.i18n import t
-from app.services import order_service, purchase_service, stock_hold_service, wallet_service
+from app.services import order_service, purchase_service, stock_hold_service, support_service, wallet_service
 from app.services.payments import invoices
 from app.services.payments.blockchain_monitor import BlockchainMonitor
 from app.utils.errors import UserError
@@ -262,14 +262,24 @@ async def _finish(sessionmaker: async_sessionmaker, bot: Bot | None, item: _Paid
         # Read now: a rollback below expires every loaded row.
         locale, chat_id = user.locale, user.chat_id or user.telegram_id
 
-        if not (item.on_time and item.product_id is not None):
+        if item.product_id is None:
             await _dm(
                 bot,
                 chat_id,
                 "💎 <b>Payment received</b>\n\n"
-                f"<b>{credited}</b> arrived after this checkout was closed, so no order was placed — "
-                "it's been added to your 👛 Wallet balance. Tap Buy Now on the product to use it, or "
-                "ask 🎧 Support if anything looks wrong.",
+                f"<b>{credited}</b> has been added to your 👛 Wallet balance.",
+            )
+            return
+
+        if not item.on_time:
+            await _hand_to_support(
+                session,
+                bot,
+                item,
+                chat_id,
+                problem="the transfer arrived after the checkout window had closed",
+                buyer_text=f"<b>{credited}</b> arrived after this checkout was closed, so no order was "
+                "placed — it's been added to your 👛 Wallet balance.",
             )
             return
 
@@ -288,24 +298,28 @@ async def _finish(sessionmaker: async_sessionmaker, bot: Bot | None, item: _Paid
             await session.commit()
         except UserError as exc:
             await session.rollback()
-            await _dm(
+            reason = t(exc.i18n_key, locale)
+            await _hand_to_support(
+                session,
                 bot,
+                item,
                 chat_id,
-                "💎 <b>Payment received</b>\n\n"
-                f"<b>{credited}</b> has been added to your 👛 Wallet balance, but the order couldn't be "
-                f"completed automatically: {t(exc.i18n_key, locale)}\n\n"
-                "Your balance is safe — tap Buy Now to try again, or ask 🎧 Support.",
+                problem=f"the order couldn't be placed: {reason}",
+                buyer_text=f"<b>{credited}</b> has been added to your 👛 Wallet balance, but the order "
+                f"couldn't be completed automatically: {reason}",
             )
             return
         except Exception as exc:  # noqa: BLE001 - the money is credited; never lose the buyer's message
             await session.rollback()
             logger.error("Placing the paid order for payment %s failed: %s", item.payment_id, exc)
-            await _dm(
+            await _hand_to_support(
+                session,
                 bot,
+                item,
                 chat_id,
-                "💎 <b>Payment received</b>\n\n"
-                f"<b>{credited}</b> has been added to your 👛 Wallet balance. The order didn't go "
-                "through automatically — tap Buy Now to finish it, or ask 🎧 Support.",
+                problem=f"placing the order failed with an internal error ({exc.__class__.__name__})",
+                buyer_text=f"<b>{credited}</b> has been added to your 👛 Wallet balance, but the order "
+                "didn't go through automatically.",
             )
             return
 
@@ -320,6 +334,50 @@ async def _finish(sessionmaker: async_sessionmaker, bot: Bot | None, item: _Paid
             except Exception as exc:  # noqa: BLE001 - the sale is done; the group post is not
                 await session.rollback()
                 logger.error("After-purchase steps failed for %s: %s", placed.order.order_number, exc)
+
+
+async def _hand_to_support(
+    session, bot: Bot | None, item: _Paid, chat_id: int, *, problem: str, buyer_text: str
+) -> None:
+    """A buyer paid on chain for a product and no order came of it: connect them to support.
+
+    The money is already in their wallet, but they sent crypto to buy something specific, and
+    "tap Buy Now to try again" left them to work out on their own what happened and whom to ask.
+    A ticket is opened for them with the payment and the reason already written in, so staff start
+    from the facts and the buyer's next message in this chat reaches a person.
+    """
+    ticket = None
+    if bot is not None:
+        try:
+            user = await UserRepo(session).get_by_id(item.user_id)
+            # A rollback just expired it, and the ticket reads its name for the topic.
+            await session.refresh(user)
+            product = await ProductRepo(session).get_by_id(item.product_id)
+            payment = await session.get(CryptoPayment, item.payment_id)
+            name = product.name if product is not None else f"product #{item.product_id}"
+            note = (
+                "🤖 Automatic: the buyer paid but did not get their order.\n\n"
+                f"Paid: ${item.amount_minor / 100:.2f} USDT for {name} ×{item.qty}\n"
+                f"Invoice: #{item.payment_id}\n"
+                f"Tx: {payment.tx_hash if payment is not None else 'unknown'}\n"
+                f"Problem: {problem}\n\n"
+                "The amount is in the buyer's wallet balance. Deliver by hand, or settle it with them here."
+            )
+            ticket = await support_service.open_payment_issue(bot, session, user=user, note=note)
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 - the buyer must still hear about their money
+            await session.rollback()
+            ticket = None
+            logger.error("Couldn't open a support ticket for paid invoice %s: %s", item.payment_id, exc)
+
+    if ticket is not None:
+        follow_up = (
+            f"🎧 We've connected you to support — ticket <b>{ticket.ticket_number}</b>. Our team has "
+            "the details of your payment; reply right here to talk to them."
+        )
+    else:
+        follow_up = "Your balance is safe — tap Buy Now to try again, or open 🎧 Support."
+    await _dm(bot, chat_id, f"💎 <b>Payment received</b>\n\n{buyer_text}\n\n{follow_up}")
 
 
 async def _tell_window_closed(
