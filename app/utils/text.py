@@ -47,3 +47,33 @@ def as_admin_wrote_it(message) -> str:
     reason this cannot simply be `message.text`.
     """
     return (message.html_text or "").strip()
+
+
+# Telegram refuses a message over 4096 characters. Counted here on the HTML as written, tags
+# included, with headroom for emoji (two UTF-16 units each) — erring short costs one extra message,
+# erring long costs the whole send.
+MESSAGE_LIMIT = 3800
+
+
+def pack_messages(head: str, items: list[str], tail: str = "", *, limit: int = MESSAGE_LIMIT) -> list[str]:
+    """Lay `head`, the `items` (one per line) and `tail` out over as few messages as fit.
+
+    An item is never cut in half: a credential split across two messages is two useless fragments.
+    The head opens the first message and the tail closes the last; continuation messages carry
+    items only.
+    """
+    messages: list[str] = []
+    prefix, body = head, []
+    for item in items:
+        if body and len(prefix) + len("\n".join([*body, item])) > limit:
+            messages.append(prefix + "\n".join(body))
+            prefix, body = "", []
+        body.append(item)
+    last = prefix + "\n".join(body)
+    if tail and last and len(last) + len(tail) > limit:
+        messages.append(last)
+        last = tail.lstrip("\n")
+    else:
+        last += tail
+    messages.append(last)
+    return messages

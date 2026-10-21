@@ -309,8 +309,10 @@ async def _finish(sessionmaker: async_sessionmaker, bot: Bot | None, item: _Paid
             )
             return
 
-        text = await purchase_service.buyer_message(session, placed, locale)
-        await _dm(bot, chat_id, "💎 <b>Payment received — thank you!</b>\n\n" + text)
+        for text in await purchase_service.buyer_messages(
+            session, placed, locale, heading="💎 <b>Payment received — thank you!</b>\n\n"
+        ):
+            await _dm(bot, chat_id, text)
         if bot is not None:
             try:
                 await purchase_service.after_purchase(bot, session, placed)

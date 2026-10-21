@@ -147,6 +147,58 @@ def _deliver_auto(
     return payloads
 
 
+async def delivered_content(session: AsyncSession, order_item: OrderItem) -> list[str]:
+    """Everything this line has handed the buyer, as the HTML they were shown. [] if nothing yet.
+
+    AUTO lines keep no copy of their own — the ciphertext on the delivered stock items is the only
+    stored one — so those are decrypted again. A hand-fulfilled line keeps what the admin sent on
+    its Delivery row.
+    """
+    from sqlalchemy import select
+
+    from app.database.models.catalog import StockItem
+
+    rows = await session.execute(
+        select(StockItem.payload)
+        .where(StockItem.order_item_id == order_item.id, StockItem.status == StockStatus.DELIVERED)
+        .order_by(StockItem.id)
+    )
+    cipher = get_cipher()
+    content = [cipher.decrypt(payload) for payload in rows.scalars()]
+
+    manual = await session.execute(
+        select(Delivery.payload)
+        .where(Delivery.order_item_id == order_item.id, Delivery.payload.is_not(None))
+        .order_by(Delivery.id.desc())
+        .limit(1)
+    )
+    sent_by_hand = manual.scalars().first()
+    if sent_by_hand:
+        content.append(sent_by_hand)
+    return content
+
+
+async def _take_manual_stock(session: AsyncSession, product: Product, qty: int) -> bool:
+    """Take `qty` off the hand-set count, or nothing if it no longer has that many. Atomic.
+
+    One conditional UPDATE, for the same reason every stock transition is one (stock_hold_service):
+    reading the count and writing it back as two steps let two buyers both see "3 left", both pass,
+    and both get sold — a count of 3 that took orders for 3 and 4. Here the database decides; a
+    concurrent buyer waits on the row and then re-checks the WHERE against the number left after
+    the first sale.
+    """
+    from sqlalchemy import update
+
+    result = await session.execute(
+        update(Product)
+        .where(Product.id == product.id, Product.manual_stock >= qty)
+        .values(manual_stock=Product.manual_stock - qty)
+        .execution_options(synchronize_session=False)
+    )
+    await session.refresh(product, attribute_names=["manual_stock"])
+    return bool(result.rowcount)
+
+
 async def _start_warranty_on_delivery(
     session: AsyncSession, *, order_item: OrderItem, user_id: int, now: datetime
 ) -> Warranty | None:
@@ -268,18 +320,31 @@ async def place_order(
     if product is None or not product.is_active or product.status.value in ("COMING_SOON", "DISABLED"):
         raise UserError("errors.product_unavailable")
 
-    # A hand-set count closes the product to buyers even while credentials sit on the shelf, and
-    # caps how many of them can go in one order. It has to be checked here rather than left to the
-    # claim, which would happily hand those credentials over.
-    if product.manual_stock is not None and product.manual_stock < qty:
-        raise UserError("errors.out_of_stock")
-
     idempotency_key = idempotency_key or checkout_idempotency_key(user_id, product_id, qty)
     order_repo = OrderRepo(session)
     existing = await order_repo.get_by_idempotency_key(idempotency_key)
     if existing is not None:
+        # A double-tapped ✅ Confirm lands here, and its answer is edited over the first one. Handing
+        # it back without the goods replaced the buyer's credentials with "Preparing your order" and
+        # sent staff a fulfilment prompt for an order that was already delivered.
         existing_full = await order_repo.get_by_id(existing.id)
-        return PlacedOrder(order=existing_full, order_item=existing_full.items[0])
+        item = existing_full.items[0]
+        content = (
+            await delivered_content(session, item)
+            if existing_full.status == OrderStatus.COMPLETED
+            else []
+        )
+        return PlacedOrder(order=existing_full, order_item=item, delivered_payloads=tuple(content))
+
+    # A hand-set count closes the product to buyers even while credentials sit on the shelf, and
+    # caps how many of them can go in one order. It has to be taken here rather than left to the
+    # claim, which would happily hand those credentials over. Taken, not just checked: whatever the
+    # sale costs the credential pool it also costs the number the admin typed, or the storefront
+    # would keep advertising a count that no longer exists. A failure later in this transaction
+    # rolls it back with everything else.
+    has_manual_stock = product.manual_stock is not None
+    if has_manual_stock and not await _take_manual_stock(session, product, qty):
+        raise UserError("errors.out_of_stock")
 
     total_minor = product.price_minor * qty
     now = datetime.now(UTC)
@@ -321,7 +386,7 @@ async def place_order(
             # beyond it, so the order is sold and fulfilled by hand instead. It goes by hand in
             # *full*: splitting it would deliver half now and leave the buyer wondering whether the
             # rest is coming, and the credentials are worth more back on the shelf.
-            if product.manual_stock is None:
+            if not has_manual_stock:
                 raise UserError("errors.out_of_stock")
             _unclaim(session, stock_items)
             stock_items = []
@@ -347,12 +412,6 @@ async def place_order(
         delivered_payloads = _deliver_auto(session, order, order_item, stock_items, now)
     else:
         order.status = OrderStatus.PROCESSING
-
-    # The override is a counter, not a label: whatever the sale cost the credential pool, it also
-    # costs the number the admin typed, or the storefront would keep advertising a count that no
-    # longer exists.
-    if product.manual_stock is not None:
-        product.manual_stock = max(0, product.manual_stock - qty)
 
     # Only for an order that has actually been delivered. A PROCESSING order has been paid for and
     # nothing else — its warranty is opened by `fulfill_manual_order` when the content is sent, so

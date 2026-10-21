@@ -19,7 +19,7 @@ from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
 from app.services.staff_guide import order_guide
 from app.utils.money import format_minor
-from app.utils.text import escape_html
+from app.utils.text import escape_html, pack_messages
 from app.utils.time import as_utc
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,28 @@ def _event_line(event: OrderEvent, order: Order) -> str:
     return line
 
 
+async def _event_messages(session: AsyncSession, event: OrderEvent, order: Order) -> list[str]:
+    """What one event posts into the thread — usually one line, more for a delivery.
+
+    A Delivered post carries what the buyer was actually given, auto or by hand, so staff answering
+    "I never got it" or "this login doesn't work" can see the exact credentials in the order's own
+    thread instead of digging them out of the stock screens. Long deliveries are spread over as
+    many messages as Telegram needs; a credential is never cut in two.
+    """
+    line = _event_line(event, order)
+    if event.kind is not OrderEventKind.DELIVERED:
+        return [line]
+
+    from app.services.order_service import delivered_content
+
+    full = await OrderRepo(session).get_by_id(order.id) or order
+    content = [piece for item in full.items for piece in await delivered_content(session, item)]
+    if not content:
+        return [line]
+    items = content if len(content) == 1 else [f"{i}. {c}" for i, c in enumerate(content, start=1)]
+    return pack_messages(f"{line}\n\n🔑 <b>Delivered content</b>\n", items)
+
+
 async def sync(bot: Bot, session: AsyncSession, order: Order) -> None:
     """Open this order's topic if it has none, then post whatever history it hasn't posted yet.
 
@@ -232,9 +254,8 @@ async def sync(bot: Bot, session: AsyncSession, order: Order) -> None:
         events = await OrderEventRepo(session).list_for_order(order.id)
         pending = [e for e in events if e.id > (order.thread_last_event_id or 0)]
         for event in pending:
-            await bot.send_message(
-                group_id, _event_line(event, order), message_thread_id=order.thread_id
-            )
+            for text in await _event_messages(session, event, order):
+                await bot.send_message(group_id, text, message_thread_id=order.thread_id)
             # Advanced per event, not once at the end: if the fifth post fails, the four already sent
             # are not sent again next time.
             order.thread_last_event_id = event.id

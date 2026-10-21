@@ -17,38 +17,59 @@ from __future__ import annotations
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.models.order import OrderStatus
 from app.locales.i18n import t
 from app.services import announcement_service, order_service, order_thread_service
+from app.utils.text import pack_messages
 
 
-async def buyer_message(session: AsyncSession, placed, locale: str) -> str:
+_PAYLOAD_SLOT = "\x00"
+
+
+async def buyer_messages(session: AsyncSession, placed, locale: str, heading: str = "") -> list[str]:
+    """The buyer's receipt — and for AUTO, their goods — as one message or, if it is long, several.
+
+    Several because Telegram refuses anything over 4096 characters outright: three longer logins in
+    one message used to be rejected whole, after the order had been paid and marked delivered, so
+    the buyer was charged and received nothing. Every message after the first carries more of the
+    credentials; no credential is ever split across two.
+    """
     from app.bot.delivery_notes import delivery_note
 
     order = placed.order
-    lines = [t("orders.placed", locale, order_number=order.order_number)]
-    if placed.delivered_payloads:
-        warranty_days = placed.order_item.warranty_days
-        # Numbered when there is more than one, so a buyer who ordered five can tell at a glance that
-        # five arrived and which line is which.
-        payload = (
-            placed.delivered_payloads[0]
-            if len(placed.delivered_payloads) == 1
-            else "\n".join(f"{i}. {p}" for i, p in enumerate(placed.delivered_payloads, start=1))
-        )
-        lines.append(t("orders.auto_delivery", locale, payload=payload, warranty_days=warranty_days))
-    else:
-        lines.append(t("orders.manual_pending", locale))
-
+    head = heading + t("orders.placed", locale, order_number=order.order_number) + "\n\n"
     note = await delivery_note(session, placed.order_item.product_id, locale)
-    if note:
-        lines.append(note)
-    return "\n\n".join(lines)
+    tail = f"\n\n{note}" if note else ""
+
+    if not placed.delivered_payloads:
+        return [head + t("orders.manual_pending", locale) + tail]
+
+    # The template is split around the payload so the credentials can flow over as many messages
+    # as they need while its heading and warranty line stay where they belong.
+    template = t(
+        "orders.auto_delivery",
+        locale,
+        payload=_PAYLOAD_SLOT,
+        warranty_days=placed.order_item.warranty_days,
+    )
+    before, after = template.split(_PAYLOAD_SLOT, 1)
+    # Numbered when there is more than one, so a buyer who ordered five can tell at a glance that
+    # five arrived and which line is which.
+    payloads = placed.delivered_payloads
+    items = (
+        list(payloads)
+        if len(payloads) == 1
+        else [f"{i}. {p}" for i, p in enumerate(payloads, start=1)]
+    )
+    return pack_messages(head + before, items, after + tail)
 
 
 async def after_purchase(bot: Bot, session: AsyncSession, placed) -> None:
     """The side effects of a sale. Each is best-effort on its own terms: the sale is already done."""
     order = placed.order
-    if not placed.delivered_payloads:
+    # On the order's status, not on whether payloads came back: a replayed Confirm used to arrive
+    # with none and put an already-delivered order in front of staff as awaiting fulfilment.
+    if order.status is OrderStatus.PROCESSING:
         # Nothing about a manual order reaches an admin on its own — push it, or it waits for
         # somebody to open the admin panel out of curiosity. This also opens its topic.
         await order_service.notify_admins_of_manual_order(bot, session, order)

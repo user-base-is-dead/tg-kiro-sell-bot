@@ -5,6 +5,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.callbacks import NavCB, OrderCB
@@ -355,7 +356,9 @@ async def on_pay_from_wallet(query: CallbackQuery, callback_data: OrderCB, sessi
 
     rendered = await render_checkout_confirm(session, int(callback_data.product_id), user, callback_data.qty)
     if rendered is None:
-        await query.answer(t("common.unknown_action", user.locale), show_alert=True)
+        # Nearly always the shelf emptying under them — another buyer took the rest between the
+        # payment chooser and this tap — and "that option isn't available" did not say so.
+        await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
         return
     text, markup = rendered
     await query.message.edit_text(text, reply_markup=markup)
@@ -387,6 +390,20 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
         return
 
     qty = max(1, min(callback_data.qty, await buyable_quantity(session, product)))
+
+    # MANUAL products hold nothing — see `render_checkout_confirm` for why reserving a credential
+    # for a hand-fulfilled order is wrong in both directions.
+    if product.fulfillment_mode is not FulfillmentMode.MANUAL:
+        held = await stock_hold_service.hold_many(session, product.id, user.id, qty)
+        if held < 1:
+            await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
+            return
+        # The invoice is for what this buyer actually holds, exactly as on the wallet route. Two
+        # buyers who both saw "4 available" and pressed at the same moment split the shelf here —
+        # invoicing the one who got 1 for all 4 took payment for 4 and then failed the order as
+        # sold out the moment the transfer landed.
+        qty = min(qty, held)
+
     wallet = await WalletRepo(session).get_or_create(user.id, currency=product.currency)
     # A covered wallet is not a reason to refuse crypto. Plenty of buyers keep a balance on purpose
     # — saved for a bigger purchase, or just topped up for later — and would rather pay this one on
@@ -396,14 +413,6 @@ async def on_pay_with_crypto(query: CallbackQuery, callback_data: OrderCB, sessi
     total_minor = product.price_minor * qty
     shortfall_minor = max(0, total_minor - wallet.balance_minor)
     invoice_minor = shortfall_minor or total_minor
-
-    # MANUAL products hold nothing — see `render_checkout_confirm` for why reserving a credential
-    # for a hand-fulfilled order is wrong in both directions.
-    if product.fulfillment_mode is not FulfillmentMode.MANUAL:
-        held = await stock_hold_service.hold_many(session, product.id, user.id, qty)
-        if held < 1:
-            await query.answer(t("errors.out_of_stock", user.locale), show_alert=True)
-            return
 
     # The invoice is told what it is paying for, and how many: when the transfer arrives the checker
     # places this exact order itself, so the buyer never has to come back and press Buy Now again.
@@ -444,14 +453,26 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
 
     # Read before anything can roll back: a rollback expires every loaded row, and touching `user`
     # afterwards would try to lazy-load it outside the async context.
-    locale = user.locale
+    locale, user_id = user.locale, user.id
     try:
-        placed = await order_service.place_order(
-            session,
-            user_id=user.id,
-            product_id=int(callback_data.product_id),
-            qty=callback_data.qty,
-        )
+        try:
+            placed = await order_service.place_order(
+                session,
+                user_id=user_id,
+                product_id=int(callback_data.product_id),
+                qty=callback_data.qty,
+            )
+        except IntegrityError:
+            # A double tap whose twin committed first: both missed the other's order, and this one
+            # hit the idempotency key's unique index. Once more from a clean transaction finds that
+            # order and hands back the same goods, instead of a generic error over the buyer's login.
+            await session.rollback()
+            placed = await order_service.place_order(
+                session,
+                user_id=user_id,
+                product_id=int(callback_data.product_id),
+                qty=callback_data.qty,
+            )
     except UserError as exc:
         # place_order had already written the order and moved the buyer's credentials to RESERVED
         # when the wallet turned out to be short. Swallowing the error used to let the session commit
@@ -464,7 +485,7 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
 
     # Built before the commit (it only reads) but sent after it, because this message *is* the goods:
     # for an AUTO product the text contains the decrypted login.
-    text = await purchase_service.buyer_message(session, placed, locale)
+    texts = await purchase_service.buyer_messages(session, placed, locale)
 
     # The sale is made durable before the credentials leave the building. It used to be the other way
     # round — the payload was shown while the transaction was still open and DbSessionMiddleware
@@ -478,8 +499,10 @@ async def on_checkout_confirm(query: CallbackQuery, callback_data: OrderCB, sess
     # payload: this screen can be the message a broadcast attached the button to, and `edit_text` is
     # rejected outright on media — same reason `products.browse._show` exists.
     try:
-        await query.message.edit_text(text)
+        await query.message.edit_text(texts[0])
     except TelegramBadRequest:
+        await query.message.answer(texts[0])
+    for text in texts[1:]:
         await query.message.answer(text)
 
     # After the commit as well. These are side effects — the orders-group topic, the manual-fulfilment
