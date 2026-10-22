@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 # U+2800 BRAILLE PATTERN BLANK, ×30.
 #
 # A message bubble and its inline keyboard share one width, and Telegram takes the wider of the two.
@@ -49,31 +51,125 @@ def as_admin_wrote_it(message) -> str:
     return (message.html_text or "").strip()
 
 
-# Telegram refuses a message over 4096 characters. Counted here on the HTML as written, tags
-# included, with headroom for emoji (two UTF-16 units each) — erring short costs one extra message,
-# erring long costs the whole send.
-MESSAGE_LIMIT = 3800
+# Telegram refuses a message whose text runs over 4096 UTF-16 units once the HTML is parsed — and
+# refuses it whole, so nothing at all arrives.
+MESSAGE_LIMIT = 4000
+
+
+def message_size(text: str) -> int:
+    """How much of the limit `text` uses, never under what Telegram will count.
+
+    UTF-16 units because that is Telegram's unit: an emoji is two of them, which `len` counts as one.
+    Measured on the HTML as written, so tags and entities count too — strictly more than the parsed
+    text Telegram measures, which is the safe direction to be wrong in.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>")
+_VOID_TAGS = {"br", "hr"}
+
+
+def _hard_cut(text: str, room: int) -> int:
+    """The longest prefix of `text` that fits in `room`, backed off so it never ends inside a tag
+    or an HTML entity — half of `<code>` or of `&amp;` would make the whole message unparseable."""
+    used = cut = 0
+    for i, ch in enumerate(text):
+        used += 2 if ord(ch) > 0xFFFF else 1
+        if used > room:
+            break
+        cut = i + 1
+    head = text[:cut]
+    if head.rfind("<") > head.rfind(">"):
+        cut = head.rfind("<")
+    amp = head.rfind("&")
+    if amp > head.rfind(";") and cut - amp <= 10:
+        cut = min(cut, amp)
+    return max(cut, 1)
+
+
+def _cut(text: str, room: int) -> list[str]:
+    """Cut `text` into pieces of at most `room`: on line breaks where possible, anywhere if a
+    single line is longer than that."""
+    pieces: list[str] = []
+    current: str | None = None
+    for line in text.split("\n"):
+        candidate = line if current is None else f"{current}\n{line}"
+        if message_size(candidate) <= room:
+            current = candidate
+            continue
+        if current is not None:
+            pieces.append(current)
+        while message_size(line) > room:
+            cut = _hard_cut(line, room)
+            pieces.append(line[:cut])
+            line = line[cut:]
+        current = line
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def _balance(pieces: list[str]) -> list[str]:
+    """Close every tag a piece leaves open, and reopen it at the start of the next one, so each
+    piece is valid HTML on its own — a `<pre>` cut in two becomes two copy-boxes, not a parse error."""
+    balanced: list[str] = []
+    carried: list[tuple[str, str]] = []
+    for piece in pieces:
+        text = "".join(opener for _, opener in carried) + piece
+        stack: list[tuple[str, str]] = []
+        for match in _TAG.finditer(text):
+            name = match.group(2).lower()
+            if name in _VOID_TAGS:
+                continue
+            if not match.group(1):
+                stack.append((name, match.group(0)))
+                continue
+            for depth in range(len(stack) - 1, -1, -1):
+                if stack[depth][0] == name:
+                    del stack[depth]
+                    break
+        balanced.append(text + "".join(f"</{name}>" for name, _ in reversed(stack)))
+        carried = stack
+    return balanced
+
+
+def _fit(text: str, budget: int) -> list[str]:
+    """`text` as pieces that each fit `budget` as sent — the closing and reopening tags included."""
+    if message_size(text) <= budget:
+        return [text]
+    room = budget
+    while True:
+        pieces = _balance(_cut(text, room))
+        if room <= 64 or all(message_size(piece) <= budget for piece in pieces):
+            return pieces
+        room = room * 3 // 4
 
 
 def pack_messages(head: str, items: list[str], tail: str = "", *, limit: int = MESSAGE_LIMIT) -> list[str]:
     """Lay `head`, the `items` (one per line) and `tail` out over as few messages as fit.
 
-    An item is never cut in half: a credential split across two messages is two useless fragments.
-    The head opens the first message and the tail closes the last; continuation messages carry
-    items only.
+    No message ever goes over `limit`. An item is kept whole whenever it fits in a message of its
+    own — a credential split across two messages is two useless fragments — and is only cut, on a
+    line break where it can be, when it is bigger than a whole message. The head opens the first
+    message and the tail closes the last.
     """
+    pieces = [piece for item in items for piece in _fit(item, limit)]
     messages: list[str] = []
     prefix, body = head, []
-    for item in items:
-        if body and len(prefix) + len("\n".join([*body, item])) > limit:
+    for piece in pieces:
+        if body and message_size(prefix + "\n".join([*body, piece])) > limit:
             messages.append(prefix + "\n".join(body))
             prefix, body = "", []
-        body.append(item)
+        elif not body and prefix and message_size(prefix + piece) > limit:
+            messages.extend(_fit(prefix.rstrip("\n"), limit))
+            prefix = ""
+        body.append(piece)
     last = prefix + "\n".join(body)
-    if tail and last and len(last) + len(tail) > limit:
-        messages.append(last)
-        last = tail.lstrip("\n")
+    if tail and message_size(last + tail) > limit:
+        if last.strip():
+            messages.extend(_fit(last.rstrip("\n"), limit))
+        messages.extend(_fit(tail.strip("\n"), limit))
     else:
-        last += tail
-    messages.append(last)
-    return messages
+        messages.extend(_fit(last + tail, limit))
+    return [message for message in messages if message.strip()]

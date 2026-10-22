@@ -22,8 +22,7 @@ from app.database.repositories.audit_repo import AuditRepo
 from app.database.repositories.order_repo import OrderRepo
 from app.database.repositories.support_repo import SupportRepo
 from app.database.repositories.user_repo import UserRepo
-from app.locales.i18n import t
-from app.services import order_event_service, order_service, order_thread_service, refund_service
+from app.services import order_event_service, order_service, order_thread_service, purchase_service, refund_service
 from app.utils.errors import UserError
 from app.utils.money import format_minor
 from app.utils.text import as_admin_wrote_it, escape_html
@@ -891,15 +890,12 @@ async def receive_fulfill_payload(message: Message, state: FSMContext, session: 
             # Word for word the message an auto-delivered buyer gets. A hand-fulfilled order is the
             # same purchase with a slower shelf behind it, and it used to arrive looking like a
             # different, more improvised thing — no warranty line, its own heading, its own layout.
-            await message.bot.send_message(
-                buyer.chat_id or buyer.telegram_id,
-                t(
-                    "orders.auto_delivery",
-                    buyer.locale,
-                    payload=as_admin_wrote_it(message),
-                    warranty_days=warranty_days,
-                ),
-            )
+            # Through the same splitter too: the admin's message can use the whole 4096 on its own,
+            # and the heading and warranty line around it would push it over.
+            for text in purchase_service.delivery_messages(
+                buyer.locale, [as_admin_wrote_it(message)], warranty_days
+            ):
+                await message.bot.send_message(buyer.chat_id or buyer.telegram_id, text)
             sent_to_buyer = True
         except Exception as exc:  # noqa: BLE001 — the order is fulfilled; report, never raise
             problem = f"the bot couldn't message them — {exc}"
